@@ -74,4 +74,29 @@ class LightningNeuralNetwork(pl.LightningModule):
         return loss
     
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters(), lr=self.learning_rate)
+        optimizer =  torch.optim.AdamW(
+            self.parameters(), 
+            lr=self.learning_rate,
+            weight_decay=0.01
+        )
+
+        total_steps = self.hparams.max_epochs * self.hparams.steps_per_epoch
+
+        #Linear Warm-up
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=self.self.learning_rate,
+            total_steps=total_steps,
+            pct_start=0.1,         # 10% of the training is the 'Warm-up' phase
+            anneal_strategy='cos', # Smoothly drops the LR after the peak
+            div_factor=25.0,       # Start LR is max_lr / 25
+            final_div_factor=1e4   # End LR is max_lr / 10,000
+        )
+
+        return {
+        "optimizer": optimizer,
+        "lr_scheduler": {
+            "scheduler": scheduler,
+            "interval": "step", # This ensures the LR updates every batch
+        },
+    }

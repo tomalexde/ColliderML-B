@@ -9,8 +9,8 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
 def main(hparams):
     # Data Preparation
-    # We prepare the jagged data lists and wrap them in the DataModule
-    print("Preparing jagged physics data...")
+    # We prepare the nested data lists and wrap them in the DataModule
+    print("Preparing nested physics data...")
     # Adjust events/purity/maxhits based on your GPU capacity
     
     data_module = prepare_it_all(

@@ -1,29 +1,24 @@
   
 from common_imports import *
 from Transformer.Encoder import *
+from collections import OrderedDict
 
 class TrackT(nn.Module):
-    def __init__(self, feature_dim=3, hidden_size=256, num_heads=6, num_encoder_layers=4, output_size=4):
+    def __init__(self, feature_dim=3, hidden_size=256, num_heads=8, num_encoder_layers=4, output_size=4):
         super(TrackT, self).__init__()
         self.name = "TrackTransformer"
-
-from common_imports import *
-
-class TrackT(nn.Module):
-    def __init__(self, feature_dim=3, hidden_size=128, num_heads=8, num_encoder_layers=4, output_size=4):
-        super(TrackT, self).__init__()
         
         # 1. Coordinate Embedding: Project (x, y, z) into high-dimensional space
         self.embedding = nn.Linear(feature_dim, hidden_size)
         
         # 2. Geometric Positional Encoding: Learns the "importance" of specific locations
         # This is a MLP that looks at the same (x, y, z) but through different weights
-        self.pos_encoder = nn.Sequential(
-            nn.Linear(feature_dim, hidden_size),
-            nn.LayerNorm(hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size)
-        )
+        self.pos_encoder = nn.Sequential(OrderedDict([
+            ("geo_proj", nn.Linear(feature_dim, hidden_size)),
+            ("geo_norm", nn.LayerNorm(hidden_size)),
+            ("geo_relu", nn.ReLU()),
+            ("geo_out", nn.Linear(hidden_size, hidden_size))
+        ]))
         
         # 3. Transformer Encoder Layers
         # We use a ModuleList to pass the Nested Tensors through each layer sequentially
