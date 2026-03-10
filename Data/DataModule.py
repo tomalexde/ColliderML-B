@@ -13,7 +13,7 @@ def DataToDataModule(batch_size, X1, I1, X2, I2, X3, I3, X4, I4):
     """
     # Combine datasets
     #X = np.vstack([X1, X2, X3, X4])
-    X = X1+X2+X3+X4
+    X = np.concatenate([X1,X2,X3,X4])
     y = np.concatenate([I1, I2, I3, I4])
 
     # Split data into train, validation, and test sets
