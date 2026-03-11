@@ -269,3 +269,64 @@ def prepare_it_all(events, purity_scale, maxhits, batch_size):
 
     return DataToDataModule(batch_size, X_ttbar, ids_ttbar,X_ggf, ids_ggf,X_dihiggs, ids_dihiggs,X_higgs_portal, ids_higgs_portal)
 
+def create_complex_dataset(purity_array, event_list, id_list, max_hits, batch_size):
+    """
+    Create a combined dataset from multiple physics processes.
+    
+    Parameters:
+    -----------
+    purity_array : list
+        List of purity_scale values for each dataset entry
+    event_list : list of range/array-like
+        List of event ranges for each dataset entry
+    id_list : list of int
+        List of process IDs (0=ttbar, 1=ggf, 2=dihiggs, 3=higgs_portal)
+    max_hits : int
+        Maximum hits per event
+    
+    Returns:
+    --------
+    X_list : list of torch.Tensor
+        Combined list of hit tensors, each of shape [n_hits, 3]
+    ids : np.ndarray
+        Array of process IDs for each event
+    """
+    
+    # Directory mapping: id -> (hits_dir, tracks_dir)
+    dir_map = {
+        0: (ttbar_base_hits_dir,         ttbar_base_tracks_dir),
+        1: (ggf_base_hits_dir,           ggf_base_tracks_dir),
+        2: (dihiggs_base_hits_dir,       dihiggs_base_tracks_dir),
+        3: (higgs_portal_base_hits_dir,  higgs_portal_base_tracks_dir),
+    }
+    
+    process_names = {0: "ttbar", 1: "ggf", 2: "dihiggs", 3: "higgs_portal"}
+    
+    all_X    = []
+    all_ids  = []
+    
+    for purity, events, event_id in zip(purity_array, event_list, id_list):
+        hits_dir, tracks_dir = dir_map[event_id]
+        
+        print(f"Loading {process_names[event_id]} | events: {list(events)[0]}–{list(events)[-1]} "
+              f"| purity_scale: {purity}")
+        
+        X_list, ids = prepare_data(
+            num_events   = events,
+            hits_dir     = hits_dir,
+            tracks_dir   = tracks_dir,
+            event_id     = event_id,
+            purity_scale = purity,
+            max_hits     = max_hits,
+        )
+        
+        all_X.extend(X_list)
+        all_ids.extend(ids.tolist())
+    
+    all_ids = np.array(all_ids, dtype=np.int32)
+    
+    print(f"\nDone. Total events loaded: {len(all_X)}")
+    for uid in np.unique(all_ids):
+        print(f"  {process_names[uid]}: {np.sum(all_ids == uid)} events")
+    
+    return DataToDatamodule1_d(batch_size,all_X, all_ids)
