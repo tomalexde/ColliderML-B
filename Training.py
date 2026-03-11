@@ -1,7 +1,7 @@
 from common_imports import *
 from argparse import ArgumentParser
 from Transformer.NeuralNetwork import LightningNeuralNetwork
-from Data.DataPrepare import prepare_it_all
+from Data.DataPrepare import prepare_it_all, create_complex_dataset
 import io
 # Lighting and WANDB
 import wandb
@@ -15,8 +15,8 @@ def main(hparams):
     # We prepare the nested data lists and wrap them in the DataModule
     print("Preparing nested physics data...")
     # Adjust events/purity/maxhits based on your GPU capacity
-    if (isComplex):
-        create_complex_dataset(purity_c, events_list_c, id_c, max_hits, batch_size)
+    if (hparams.isComplex):
+        create_complex_dataset(hparams.purity_c, hparams.events_list_c, hparams.id_c, hparams.max_hits, hparams.batch_size)
     else:
         if hparams.num_events == 0:
             hparams.num_events = hparams.num_events_list

@@ -1,6 +1,6 @@
 from common_imports import *
 from filepaths import Filepath
-from Data.DataModule import DataToDataModule
+from Data.DataModule import DataToDataModule, DataToDataModule_1d
 
 def prepare_data(
     num_events,
@@ -291,13 +291,13 @@ def create_complex_dataset(purity_array, event_list, id_list, max_hits, batch_si
     ids : np.ndarray
         Array of process IDs for each event
     """
-    
+    filepath = Filepath()
     # Directory mapping: id -> (hits_dir, tracks_dir)
     dir_map = {
-        0: (ttbar_base_hits_dir,         ttbar_base_tracks_dir),
-        1: (ggf_base_hits_dir,           ggf_base_tracks_dir),
-        2: (dihiggs_base_hits_dir,       dihiggs_base_tracks_dir),
-        3: (higgs_portal_base_hits_dir,  higgs_portal_base_tracks_dir),
+        0: (filepath.ttbar_base_hits_dir,         filepath.ttbar_base_tracks_dir),
+        1: (filepath.ggf_base_hits_dir,           filepath.ggf_base_tracks_dir),
+        2: (filepath.dihiggs_base_hits_dir,       filepath.dihiggs_base_tracks_dir),
+        3: (filepath.higgs_portal_base_hits_dir,  filepath.higgs_portal_base_tracks_dir),
     }
     
     process_names = {0: "ttbar", 1: "ggf", 2: "dihiggs", 3: "higgs_portal"}
@@ -329,4 +329,4 @@ def create_complex_dataset(purity_array, event_list, id_list, max_hits, batch_si
     for uid in np.unique(all_ids):
         print(f"  {process_names[uid]}: {np.sum(all_ids == uid)} events")
     
-    return DataToDatamodule1_d(batch_size,all_X, all_ids)
+    return DataToDataModule_1d(batch_size,all_X, all_ids)
