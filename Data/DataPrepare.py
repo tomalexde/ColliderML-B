@@ -1,6 +1,6 @@
 from common_imports import *
-from ..filepaths import Filepath
-from DataModule import DataToDataModule
+from filepaths import Filepath
+from Data.DataModule import DataToDataModule
 
 def prepare_data(
     num_events,
