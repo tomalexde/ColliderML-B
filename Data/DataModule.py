@@ -95,27 +95,3 @@ class NestedDataModule(pl.LightningDataModule):
             batch_size=self.batch_size, 
             collate_fn=self.collate_nested
         )
-
-def DataToDataModule_1d(batch_size, X, y):
-    """
-    Converts ragged hit lists and labels into a NestedTrackDataModule.
-    
-    Parameters:
-    -----------
-    X_list : list of torch.Tensors (each of shape [n_hits, 3])
-    y_list : np.ndarray of labels
-    """
-
-    # Split data into train, validation, and test sets
-    X_train_val, X_test, y_train_val, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y)
-
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_train_val, y_train_val, test_size=0.25, random_state=42, stratify=y_train_val)
-
-    return(NestedDataModule(
-        X_train, y_train,
-        X_val, y_val,
-        X_test, y_test,
-        batch_size=batch_size
-    ))
