@@ -32,14 +32,16 @@ def DataToDataModule(batch_size, X1, I1, X2, I2, X3, I3, X4, I4):
 
 class NestedDataset(Dataset):
     """Simple wrapper to hold lists of tensors for variable-length events."""
-    def __init__(self, event_list):
-        self.event_list = event_list
+    def __init__(self, X, y):
+        self.X = X
+        self.y = y
+        assert len(self.X) == len(self.y)
 
     def __len__(self):
-        return len(self.event_list)
+        return len(self.X)
 
     def __getitem__(self, idx):
-        return self.event_list[idx]
+        return self.X[idx], self.y[idx]
 
 class NestedDataModule(pl.LightningDataModule):
     def __init__(self, X_train, y_train, X_val, y_val, X_test, y_test, batch_size):
