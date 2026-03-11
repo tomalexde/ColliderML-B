@@ -11,10 +11,10 @@ def prepare_data(
     max_hits
 ):
     """
-    Prepare ML dataset with track-associated hits and optional raw hits.
+    Prepare ML dataset with track-associated hits and additional particles based on purity_scale.
     
-    Track-associated hits take absolute priority. Raw hits are added based on purity_scale.
-    max_hits parameter takes priority over purity_scale.
+    Track-associated hits are always included. Additional particles are selected based on (# of tracks) * purity_scale.
+    max_hits parameter caps the total hits per event.
     
     Parameters:
     -----------
@@ -26,18 +26,15 @@ def prepare_data(
         Directory path to tracks parquet data
     event_id : int or str
         Single identifier to assign to all output events
-    purity_scale : int/float or False
-        Multiplier for raw hits per track hit.
-        - 0: only track-associated hits
-        - N (positive number): N raw hits per track hit (capped by availability and max_hits)
-        - False: include all available raw hits up to max_hits
+    purity_scale : int/float
+        Multiplier for additional particles per track (e.g., 2 = 2 additional particles per track)
     max_hits : int
-        Maximum hits per event. Takes absolute priority over purity_scale.
+        Maximum hits per event.
     
     Returns:
     --------
-    X : np.ndarray
-        Shape [n_valid_events, max_hits, 3] containing [x, y, z] coordinates
+    X_list : list of torch.Tensor
+        List of tensors, each of shape [max_hits, 3] containing [x, y, z] coordinates
     ids : np.ndarray
         Shape [n_valid_events] all filled with event_id parameter
     """
@@ -53,14 +50,13 @@ def prepare_data(
     tracks_df = utils.read_events_tracks(tracks_dir, events)
     
     # Pre-group for fast lookup
-    hits_by_event = {eid: group[['x', 'y', 'z']].values 
+    hits_by_event = {eid: group[['x', 'y', 'z', 'particle_id']].values 
                      for eid, group in hits_df.groupby('event_id')}
     
     tracks_by_event = {eid: group['hit_ids'].values 
                        for eid, group in tracks_df.groupby('event_id')}
     
-    # Output arrays
-    valid_count = 0
+    # Output lists
     X_list = []
     ids_list = []
     
@@ -70,7 +66,7 @@ def prepare_data(
         if event_id_val not in hits_by_event:
             continue
         
-        all_hits = hits_by_event[event_id_val]
+        all_hits = hits_by_event[event_id_val]  # shape (n_hits, 4) with [x, y, z, particle_id]
         track_hit_ids_nested = tracks_by_event.get(event_id_val, np.array([], dtype=object))
         
         # Flatten and unique all track hit IDs for this event
@@ -83,62 +79,52 @@ def prepare_data(
         valid_mask = (track_hit_ids >= 0) & (track_hit_ids < len(all_hits))
         track_hit_ids = track_hit_ids[valid_mask]
         
-        # Extract track-associated hits
+        # Get unique particle IDs associated with tracks
         if len(track_hit_ids) > 0:
-            track_hits = all_hits[track_hit_ids]
+            track_pids = np.unique(all_hits[track_hit_ids, 3])
+        else:
+            track_pids = np.array([], dtype=all_hits.dtype[3])
+        
+        num_tracks = len(track_pids)  # Number of unique particles with tracks
+        
+        # Save all hits associated with tracks
+        if len(track_hit_ids) > 0:
+            track_hits = all_hits[track_hit_ids, :3]
         else:
             track_hits = np.zeros((0, 3), dtype=np.float32)
         
-        n_track_hits = len(track_hits)
+        # Determine additional particles: (# of tracks) * purity_scale
+        n_additional_particles = int(num_tracks * purity_scale)
         
-        # Determine total hits to include
-        filled_count = n_track_hits
+        # Get all unique particle IDs not associated with tracks
+        all_pids = np.unique(all_hits[:, 3])
+        non_track_pids = np.setdiff1d(all_pids, track_pids)
         
-        # Add raw hits if purity_scale is set and space available
-        if filled_count < max_hits:
-            if purity_scale is not False:
-                # Calculate how many raw hits to add
-                n_raw_available = len(all_hits) - n_track_hits
-                n_raw_to_add = int(n_track_hits * purity_scale)
-                n_raw_to_add = min(n_raw_to_add, n_raw_available, max_hits - filled_count)
-            else:
-                # Include all remaining raw hits up to max_hits
-                n_raw_available = len(all_hits) - n_track_hits
-                n_raw_to_add = min(n_raw_available, max_hits - filled_count)
-            
-            if n_raw_to_add > 0:
-                # Get raw hit indices (exclude track hits)
-                track_hit_set = set(track_hit_ids)
-                raw_indices = np.array([i for i in range(len(all_hits)) if i not in track_hit_set], dtype=np.int32)
-                
-                # Randomly sample raw hits (fast)
-                raw_indices = np.random.choice(raw_indices, size=n_raw_to_add, replace=False)
-                raw_hits = all_hits[raw_indices]
-                
-                # Combine track and raw hits
-                hits_data = np.vstack([track_hits, raw_hits])
-                filled_count = len(hits_data)
-            else:
-                hits_data = track_hits
+        # Select additional particles (up to available)
+        n_additional_particles = min(n_additional_particles, len(non_track_pids))
+        if n_additional_particles > 0:
+            additional_pids = np.random.choice(non_track_pids, size=n_additional_particles, replace=False)
         else:
-            # Only track hits (capped at max_hits)
-            hits_data = track_hits[:max_hits]
-            filled_count = len(hits_data)
+            additional_pids = np.array([], dtype=non_track_pids.dtype)
         
-        # Create tensor
-        hits_data = hits_data[:max_hits] 
+        # Get all hits for additional particles
+        if len(additional_pids) > 0:
+            additional_mask = np.isin(all_hits[:, 3], additional_pids)
+            additional_hits = all_hits[additional_mask, :3]
+        else:
+            additional_hits = np.zeros((0, 3), dtype=np.float32)
+        
+        # Combine track hits and additional hits
+        hits_data = np.vstack([track_hits, additional_hits])
+        
+        # Cap at max_hits
+        hits_data = hits_data[:max_hits]
+        
         X_list.append(torch.tensor(hits_data, dtype=torch.float32))
         ids_list.append(event_id)
-        valid_count += 1
     
-    # Stack into final arrays
-    if valid_count == 0:
-        # Return empty arrays if no valid events
-        X = np.zeros((0, max_hits, 3), dtype=np.float32)
-        ids = np.array([], dtype=type(event_id))
-        X_list.append(torch.tensor(X, dtype=torch.float32))
-    else:
-        ids = np.array(ids_list, dtype=type(event_id))
+    # Convert ids to array
+    ids = np.array(ids_list, dtype=type(event_id))
     
     return X_list, ids
 
@@ -222,6 +208,7 @@ def calculate_max_hits_from_purity(
     max_hits = max(max_hits_needed) if max_hits_needed else 0
     
     return int(max_hits)
+
 
 
 def prepare_it_all(events, purity_scale, maxhits, batch_size):
