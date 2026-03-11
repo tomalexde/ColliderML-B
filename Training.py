@@ -1,26 +1,31 @@
 from common_imports import *
 from argparse import ArgumentParser
-from NeuralNetwork import LightningNeuralNetwork
+from Transformer.NeuralNetwork import LightningNeuralNetwork
 from Data.DataPrepare import prepare_it_all
 import io
-# Tensorboard logger
+# Lighting and WANDB
+import wandb
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+import pytorch_lightning as pl
+from pytorch_lightning.loggers import WandbLogger
 
 def main(hparams):
     # Data Preparation
     # We prepare the nested data lists and wrap them in the DataModule
     print("Preparing nested physics data...")
     # Adjust events/purity/maxhits based on your GPU capacity
-    
+    if hparams.num_events == 0:
+        hparams.num_events = hparams.num_events_list
     data_module = prepare_it_all(
-        events=range(hparams.num_events), 
+        events=hparams.num_events, 
         purity_scale=hparams.purity, 
         maxhits=hparams.max_hits,
         batch_size = hparams.batch_size
     )
     # Create a logger
-    logger = TensorBoardLogger("lightning_logs", name="TrackT")
+    wandb_logger = WandbLogger(project='ColliderML-GroupB')
+    wandb_logger.experiment.config["batch_size"] = hparams.batch_size
 
     # Create early stopping callback
     early_stopping = EarlyStopping(
@@ -43,7 +48,7 @@ def main(hparams):
     # Create a trainer with tensorboard logging, early stopping, and checkpoint saving
     trainer = pl.Trainer(
         max_epochs=hparams.max_epochs,
-        logger=logger,
+        logger=wandb_logger,
         callbacks=[early_stopping, checkpoint_callback],
         accelerator=hparams.accelerator, 
         devices=hparams.devices,
@@ -89,7 +94,8 @@ def main(hparams):
 
     #print("\n--- Results Exported ---")
     #print("Efficiencies saved to: results_efficiencies.csv")
-
+    # [optional] finish the wandb run, necessary in notebooks
+    # wandb.finish()
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -101,8 +107,9 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=32)
     
     # Physics/Data Args
-    parser.add_argument("--num_events", type=int, default=5000)
-    parser.add_argument("--purity", type=float, default=10.0)
+    parser.add_argument("--num_events", type=int, default=0)
+    parser.add_argument("--num_events_list", type=int, default=[0])
+    parser.add_argument("--purity", type=float, default=0)
     parser.add_argument("--max_hits", type=int, default=17000)
     
     

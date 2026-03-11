@@ -1,5 +1,5 @@
 from common_imports import *
-from MultiHeadAttention import MultiHeadAttention
+from Transformer.MultiHeadAttention import MultiHeadAttention
 from typing import Optional
 
 class TransformerEncoderLayer(nn.Module):

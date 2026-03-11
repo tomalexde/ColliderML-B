@@ -1,5 +1,5 @@
 from common_imports import *
-from TrackTransformer import TrackT
+from Transformer.TrackTransformer import TrackT
 from torchmetrics.classification import MulticlassConfusionMatrix
 
 
@@ -79,13 +79,15 @@ class LightningNeuralNetwork(pl.LightningModule):
             lr=self.learning_rate,
             weight_decay=0.01
         )
-
-        total_steps = self.hparams.max_epochs * self.hparams.steps_per_epoch
+        
+        max_epochs = self.trainer.max_epochs
+        steps_per_epoch = len(self.trainer.datamodule.train_dataloader())
+        total_steps = max_epochs * steps_per_epoch
 
         #Linear Warm-up
         scheduler = torch.optim.lr_scheduler.OneCycleLR(
             optimizer,
-            max_lr=self.self.learning_rate,
+            max_lr=self.learning_rate,
             total_steps=total_steps,
             pct_start=0.1,         # 10% of the training is the 'Warm-up' phase
             anneal_strategy='cos', # Smoothly drops the LR after the peak
