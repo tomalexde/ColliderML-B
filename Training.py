@@ -15,14 +15,17 @@ def main(hparams):
     # We prepare the nested data lists and wrap them in the DataModule
     print("Preparing nested physics data...")
     # Adjust events/purity/maxhits based on your GPU capacity
-    if hparams.num_events == 0:
-        hparams.num_events = hparams.num_events_list
-    data_module = prepare_it_all(
-        events=hparams.num_events, 
-        purity_scale=hparams.purity, 
-        maxhits=hparams.max_hits,
-        batch_size = hparams.batch_size
-    )
+    if (isComplex):
+        create_complex_dataset(purity_c, events_list_c, id_c, max_hits, batch_size)
+    else:
+        if hparams.num_events == 0:
+            hparams.num_events = hparams.num_events_list
+        data_module = prepare_it_all(
+            events=hparams.num_events, 
+            purity_scale=hparams.purity, 
+            maxhits=hparams.max_hits,
+            batch_size = hparams.batch_size
+        )
     # Create a logger
     wandb_logger = WandbLogger(project='ColliderML-GroupB')
     wandb_logger.experiment.config["batch_size"] = hparams.batch_size
@@ -105,6 +108,7 @@ if __name__ == "__main__":
     parser.add_argument("--devices", type=int, default=1)
     parser.add_argument("--max_epochs", type=int, default=500)
     parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--isComplex", type = bool, default=False)
     
     # Physics/Data Args
     parser.add_argument("--num_events", type=int, default=0)
@@ -112,6 +116,11 @@ if __name__ == "__main__":
     parser.add_argument("--purity", type=float, default=0)
     parser.add_argument("--max_hits", type=int, default=17000)
     
+    
+    #data args for complex
+    parser.add_argument("--events_list_c", type=int, default=[range(0,100),range(0,100),range(0,100),range(0,100)])
+    parser.add_argument("--purity_c", type = list[float], default=[0,0,0,0])
+    parser.add_argument("--id_c", type = list[int], default=[0,1,2,3])
     
     # Model Architecture Args
     parser.add_argument("--hidden_size", type=int, default=256)
