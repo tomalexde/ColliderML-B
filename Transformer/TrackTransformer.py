@@ -39,6 +39,13 @@ class TrackT(nn.Module):
         """
         Input: x is a torch.NestedTensor of shape (Batch, [Hits], 3)
         """
+
+        #Step 0: Pad incoming batch
+        #if hasattr(x, 'is_nested') and x.is_nested:
+        #    x = x.to_padded_tensor(0.0)
+        # Mask
+        #mask = (x != 0).any(dim=-1)
+
         # Step 1: Combine feature info and geometric info
         # Even with Nested Tensors, addition works hit-by-hit
         x_embed = self.embedding(x)

@@ -66,7 +66,7 @@ class NestedDataModule(pl.LightningDataModule):
         y_list = [item[1] for item in batch]
 
         # 1. Create the NestedTensor (the efficient ragged structure)
-        x_nested = torch.nested.as_nested_tensor(x_list)
+        x_nested = torch.nested.nested_tensor(x_list,layout=torch.jagged)
         
         # 2. Convert labels to a standard tensor
         y_tensor = torch.tensor(y_list, dtype=torch.long)

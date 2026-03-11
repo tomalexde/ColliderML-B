@@ -4,7 +4,7 @@ from torchmetrics.classification import MulticlassConfusionMatrix
 
 
 class LightningNeuralNetwork(pl.LightningModule):
-    def __init__(self, feature_dim=4, hidden_size=256, num_heads=6, 
+    def __init__(self, feature_dim=3, hidden_size=256, num_heads=6, 
                  num_encoder_layers=4, output_size=1, learning_rate=0.0001):
         super().__init__()
 
