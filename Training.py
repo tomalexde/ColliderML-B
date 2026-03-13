@@ -67,7 +67,7 @@ def main(hparams):
 
     # Train the model
     model = LightningNeuralNetwork(
-        feature_dim=3, 
+        feature_dim=5, 
         hidden_size=hparams.hidden_size,
         num_heads=hparams.nhead,
         num_encoder_layers=hparams.layers,

@@ -12,7 +12,7 @@ class TrackT(nn.Module):
 
     def __init__(
         self,
-        feature_dim: int = 3,
+        feature_dim: int = 5,
         hidden_size: int = 256,
         num_heads: int = 8,
         num_encoder_layers: int = 4,
