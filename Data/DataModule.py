@@ -3,9 +3,6 @@ from torch.utils.data import DataLoader, Dataset
 
 
 def DataToDataModule(batch_size, X1, I1, X2, I2, X3, I3, X4, I4):
-    """
-    Converts ragged hit lists and labels into a PaddedDataModule.
-    """
     X = X1 + X2 + X3 + X4
     y = np.concatenate([I1, I2, I3, I4])
 
@@ -24,7 +21,6 @@ def DataToDataModule(batch_size, X1, I1, X2, I2, X3, I3, X4, I4):
 
 
 class TrackDataset(Dataset):
-    """Holds a list of variable-length hit tensors and their event labels."""
     def __init__(self, X, y):
         self.X = X
         self.y = y
@@ -37,41 +33,57 @@ class TrackDataset(Dataset):
         return self.X[idx], self.y[idx]
 
 
-def collate_padded(batch):
+def sort_hits_by_radius(x: torch.Tensor) -> torch.Tensor:
     """
-    Collate a batch of variable-length hit tensors into a single dense tensor
-    by zero-padding to the longest sequence in the batch, and build a boolean
-    key_padding_mask so the transformer ignores the pad positions.
+    Option 1: Sort hits by cylindrical radius r = sqrt(x^2 + y^2).
 
-    We also pad the sequence length to the next multiple of 8 so that all
-    SDPA GEMMs (which have k=seq_len) satisfy the bf16 cuBLAS alignment
-    requirement (all GEMM dims must be multiples of 8).
+    Why radius? The ATLAS/CMS tracker is cylindrical — hits from the same
+    particle form a radial arc outward from the interaction point. Sorting by
+    radius groups spatially proximate hits together in the sequence, so a
+    sliding window captures physically meaningful neighbourhoods instead of
+    arbitrary assembly order.
+
+    x: (N, 3) tensor of [x, y, z] hit coordinates.
+    Returns the same tensor with rows reordered by ascending radius.
+    """
+    radius = (x[:, 0] ** 2 + x[:, 1] ** 2).sqrt()   # (N,)
+    order  = radius.argsort()
+    return x[order]
+
+
+def collate_padded(batch, sort_by_radius: bool = True):
+    """
+    Collate variable-length hit tensors into a padded dense batch.
+
+    sort_by_radius: if True (default), hits within each event are sorted by
+    cylindrical radius before padding. This makes the sliding window in
+    MultiHeadAttention physically meaningful — nearby positions in the
+    sequence correspond to nearby detector layers.
 
     Returns:
-        x_padded  : (B, max_hits_padded, 3)   float32 dense tensor
-        mask      : (B, max_hits_padded)       bool tensor
-                    True  = this position is a PAD token (ignored by attention)
-                    False = real hit
-        y_tensor  : (B,)                       long tensor of event labels
+        x_padded : (B, max_hits_padded, 3)   float32
+        mask     : (B, max_hits_padded)       bool, True = pad
+        y_tensor : (B,)                       long
     """
     x_list = [item[0] for item in batch]
     y_list = [item[1] for item in batch]
 
-    lengths    = [x.shape[0] for x in x_list]
-    max_len_raw = max(lengths)
+    # --- Option 1: sort each event's hits by radius ----------------------
+    if sort_by_radius:
+        x_list = [sort_hits_by_radius(x) for x in x_list]
 
-    # Round up to next multiple of 8 for bf16 GEMM alignment
-    max_len = ((max_len_raw + 7) // 8) * 8
+    lengths = [x.shape[0] for x in x_list]
+    max_len = max(lengths)   # pad to longest sequence in batch
 
     B    = len(x_list)
-    feat = x_list[0].shape[1]  # 3
+    feat = x_list[0].shape[1]   # 3
 
     x_padded = torch.zeros(B, max_len, feat, dtype=torch.float32)
     mask     = torch.ones(B, max_len, dtype=torch.bool)   # True = pad
 
     for i, (x, length) in enumerate(zip(x_list, lengths)):
         x_padded[i, :length] = x
-        mask[i, :length]     = False  # real hits are NOT masked
+        mask[i, :length]     = False
 
     y_tensor = torch.tensor(y_list, dtype=torch.long)
     return x_padded, mask, y_tensor
