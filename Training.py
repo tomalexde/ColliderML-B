@@ -1,7 +1,7 @@
 from common_imports import *
 from argparse import ArgumentParser
 from Transformer.NeuralNetwork import LightningNeuralNetwork
-from Data.DataPrepare import prepare_it_all, create_complex_dataset
+from Data.DataPrepare import prepare_it_all, create_complex_dataset, prepare_tracks_only
 import io
 import wandb
 # Lighting and WANDB
@@ -22,7 +22,11 @@ def main(hparams):
     print("Preparing nested physics data...")
     # Adjust events/purity/maxhits based on your GPU capacity
     if (hparams.isComplex):
-        create_complex_dataset(hparams.purity_c, hparams.events_list_c, hparams.id_c, hparams.max_hits, hparams.batch_size)
+        data_module = create_complex_dataset(hparams.purity_c, hparams.events_list_c, hparams.id_c, hparams.max_hits, hparams.batch_size)
+    elif hparams.isTracks: 
+        if hparams.num_events_t == 0:
+            hparams.num_events_t = hparams.num_events_list_t
+        data_module = prepare_tracks_only(hparams.num_events_t, hparams.batch_size)
     else:
         if hparams.num_events == 0:
             hparams.num_events = hparams.num_events_list
@@ -127,6 +131,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_epochs", type=int, default=500)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--isComplex", type = bool, default=False)
+    parser.add_argument("--isTracks", type = bool, default=False)
     
     # Physics/Data Args
     parser.add_argument("--num_events", type=int, default=0)
@@ -140,6 +145,10 @@ if __name__ == "__main__":
     parser.add_argument("--purity_c", type = list[float], default=[0,0,0,0])
     parser.add_argument("--id_c", type = list[int], default=[0,1,2,3])
     
+    #data args for tracks
+    parser.add_argument("--num_events_t", type=int, default=0)
+    parser.add_argument("--num_events_list_t", type=int, default=[0])
+
     # Model Architecture Args
     parser.add_argument("--hidden_size", type=int, default=256)
     parser.add_argument("--nhead", type=int, default=8)
