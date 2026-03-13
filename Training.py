@@ -4,11 +4,13 @@ from Transformer.NeuralNetwork import LightningNeuralNetwork
 from Data.DataPrepare import prepare_it_all
 import io
 # Lighting and WANDB
-import wandb
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
+
+#Debugging
+torch.set_float32_matmul_precision('high')
 
 def main(hparams):
     # Data Preparation
@@ -24,8 +26,9 @@ def main(hparams):
         batch_size = hparams.batch_size
     )
     # Create a logger
-    wandb_logger = WandbLogger(project='ColliderML-GroupB')
-    wandb_logger.experiment.config["batch_size"] = hparams.batch_size
+    logger = TensorBoardLogger("lightning._logs", name="TrackT")
+    #wandb_logger = WandbLogger(project='ColliderML-GroupB')
+    #wandb_logger.experiment.config["batch_size"] = hparams.batch_size
 
     # Create early stopping callback
     early_stopping = EarlyStopping(
@@ -48,11 +51,12 @@ def main(hparams):
     # Create a trainer with tensorboard logging, early stopping, and checkpoint saving
     trainer = pl.Trainer(
         max_epochs=hparams.max_epochs,
-        logger=wandb_logger,
+        logger=logger,
         callbacks=[early_stopping, checkpoint_callback],
         accelerator=hparams.accelerator, 
         devices=hparams.devices,
-        precision="16-mixed"
+        precision="32-true",
+        gradient_clip_val=0.5 #Debugging
     )
 
     # Train the model

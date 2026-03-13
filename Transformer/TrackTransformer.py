@@ -1,72 +1,82 @@
-  
 from common_imports import *
-from Transformer.Encoder import *
+from Transformer.Encoder import TransformerEncoderLayer
 from collections import OrderedDict
 
+
 class TrackT(nn.Module):
-    def __init__(self, feature_dim=3, hidden_size=256, num_heads=8, num_encoder_layers=4, output_size=4):
-        super(TrackT, self).__init__()
+    """
+    Transformer for particle track classification.
+    Uses padded dense tensors + key_padding_mask (standard approach).
+    No precision hacks needed — works cleanly with fp32.
+    """
+
+    def __init__(
+        self,
+        feature_dim: int = 3,
+        hidden_size: int = 256,
+        num_heads: int = 8,
+        num_encoder_layers: int = 4,
+        output_size: int = 4,
+    ):
+        super().__init__()
         self.name = "TrackTransformer"
-        
-        # 1. Coordinate Embedding: Project (x, y, z) into high-dimensional space
-        self.embedding = nn.Linear(feature_dim, hidden_size)
-        
-        # 2. Geometric Positional Encoding: Learns the "importance" of specific locations
-        # This is a MLP that looks at the same (x, y, z) but through different weights
+
+        # 1. Coordinate embedding
+        self.embedding  = nn.Linear(feature_dim, hidden_size)
+        self.norm_final = nn.LayerNorm(hidden_size)
+
+        # 2. Geometric positional encoding
         self.pos_encoder = nn.Sequential(OrderedDict([
             ("geo_proj", nn.Linear(feature_dim, hidden_size)),
             ("geo_norm", nn.LayerNorm(hidden_size)),
             ("geo_relu", nn.ReLU()),
-            ("geo_out", nn.Linear(hidden_size, hidden_size))
+            ("geo_out",  nn.Linear(hidden_size, hidden_size)),
         ]))
-        
-        # 3. Transformer Encoder Layers
-        # We use a ModuleList to pass the Nested Tensors through each layer sequentially
+
+        # 3. Transformer encoder layers
         self.layers = nn.ModuleList([
-            TransformerEncoderLayer(hidden_size, num_heads, hidden_size*4) 
+            TransformerEncoderLayer(hidden_size, num_heads, hidden_size * 4)
             for _ in range(num_encoder_layers)
         ])
-        
-        # 4. Classification Head
-        # We pool the hits and then reduce them to our 4 class probabilities
+
+        # 4. Classification head
         self.classifier = nn.Sequential(
-            nn.Linear(hidden_size * 2, hidden_size), # *2 because we concat mean and max
+            nn.Linear(hidden_size * 2, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, output_size)
+            nn.Linear(hidden_size, output_size),
         )
 
-    def forward(self, x):
+    def forward(
+        self,
+        x: torch.Tensor,
+        key_padding_mask: torch.Tensor,
+    ) -> torch.Tensor:
         """
-        Input: x is a torch.NestedTensor of shape (Batch, [Hits], 3)
+        Args:
+            x:                (B, max_hits, feature_dim)  padded dense tensor
+            key_padding_mask: (B, max_hits)               True = pad position
+        Returns:
+            logits: (B, output_size)
         """
+        # Step 1 — embed hit coordinates
+        x = self.embedding(x) + self.pos_encoder(x)
 
-        #Step 0: Pad incoming batch
-        #if hasattr(x, 'is_nested') and x.is_nested:
-        #    x = x.to_padded_tensor(0.0)
-        # Mask
-        #mask = (x != 0).any(dim=-1)
-
-        # Step 1: Combine feature info and geometric info
-        # Even with Nested Tensors, addition works hit-by-hit
-        x_embed = self.embedding(x)
-        x_pos = self.pos_encoder(x)
-        x = x_embed + x_pos
-        
-        # Step 2: Pass through Transformer layers
-        # Each hit now "sees" every other hit in its own event
+        # Step 2 — transformer encoder (pad positions masked out in attention)
         for layer in self.layers:
-            x = layer(x)
-            
-        # Step 3: Global Pooling for Nested Tensors
-        # .mean(dim=1) on a NestedTensor correctly averages only the hits present
-        avg_pool = x.mean(dim=1)       # Shape: (Batch, Hidden_Size)
-        
-        # .max(dim=1) finds the most 'excited' feature across the event
-        max_pool = x.max(dim=1)[0]     # Shape: (Batch, Hidden_Size)
-        
-        # Concatenate for a rich "Event Fingerprint"
-        # Shape: (Batch, Hidden_Size * 2)
-        pooled = torch.cat([avg_pool, max_pool], dim=1)
-        
-        # Step 4: Final Prediction
+            x = layer(x, key_padding_mask=key_padding_mask)
+        x = self.norm_final(x)
+
+        # Step 3 — mask-aware global pooling
+        # Zero out pad positions so they don't affect mean or max
+        real_mask = (~key_padding_mask).unsqueeze(-1).to(x.dtype)  # (B, max_hits, 1)
+
+        # Mean: sum real hits / count real hits
+        avg_pool = (x * real_mask).sum(dim=1) / real_mask.sum(dim=1).clamp(min=1)
+
+        # Max: set pad positions to -inf so they never win
+        max_pool = x.masked_fill(key_padding_mask.unsqueeze(-1), float("-inf")).max(dim=1).values
+
+        pooled = torch.cat([avg_pool, max_pool], dim=1)  # (B, hidden_size * 2)
+
+        # Step 4 — classify
         return self.classifier(pooled)

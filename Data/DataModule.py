@@ -1,37 +1,30 @@
 from common_imports import *
 from torch.utils.data import DataLoader, Dataset
-import torch.nested
+
 
 def DataToDataModule(batch_size, X1, I1, X2, I2, X3, I3, X4, I4):
     """
-    Converts ragged hit lists and labels into a NestedTrackDataModule.
-    
-    Parameters:
-    -----------
-    X_list : list of torch.Tensors (each of shape [n_hits, 3])
-    y_list : np.ndarray of labels
+    Converts ragged hit lists and labels into a PaddedDataModule.
     """
-    # Combine datasets
-    #X = np.vstack([X1, X2, X3, X4])
-    X = X1+X2+X3+X4
+    X = X1 + X2 + X3 + X4
     y = np.concatenate([I1, I2, I3, I4])
 
-    # Split data into train, validation, and test sets
     X_train_val, X_test, y_train_val, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y)
 
     X_train, X_val, y_train, y_val = train_test_split(
         X_train_val, y_train_val, test_size=0.25, random_state=42, stratify=y_train_val)
 
-    return(NestedDataModule(
+    return PaddedDataModule(
         X_train, y_train,
-        X_val, y_val,
-        X_test, y_test,
+        X_val,   y_val,
+        X_test,  y_test,
         batch_size=batch_size
-    ))
+    )
 
-class NestedDataset(Dataset):
-    """Simple wrapper to hold lists of tensors for variable-length events."""
+
+class TrackDataset(Dataset):
+    """Holds a list of variable-length hit tensors and their event labels."""
     def __init__(self, X, y):
         self.X = X
         self.y = y
@@ -43,55 +36,81 @@ class NestedDataset(Dataset):
     def __getitem__(self, idx):
         return self.X[idx], self.y[idx]
 
-class NestedDataModule(pl.LightningDataModule):
+
+def collate_padded(batch):
+    """
+    Collate a batch of variable-length hit tensors into a single dense tensor
+    by zero-padding to the longest sequence in the batch, and build a boolean
+    key_padding_mask so the transformer ignores the pad positions.
+
+    We also pad the sequence length to the next multiple of 8 so that all
+    SDPA GEMMs (which have k=seq_len) satisfy the bf16 cuBLAS alignment
+    requirement (all GEMM dims must be multiples of 8).
+
+    Returns:
+        x_padded  : (B, max_hits_padded, 3)   float32 dense tensor
+        mask      : (B, max_hits_padded)       bool tensor
+                    True  = this position is a PAD token (ignored by attention)
+                    False = real hit
+        y_tensor  : (B,)                       long tensor of event labels
+    """
+    x_list = [item[0] for item in batch]
+    y_list = [item[1] for item in batch]
+
+    lengths    = [x.shape[0] for x in x_list]
+    max_len_raw = max(lengths)
+
+    # Round up to next multiple of 8 for bf16 GEMM alignment
+    max_len = ((max_len_raw + 7) // 8) * 8
+
+    B    = len(x_list)
+    feat = x_list[0].shape[1]  # 3
+
+    x_padded = torch.zeros(B, max_len, feat, dtype=torch.float32)
+    mask     = torch.ones(B, max_len, dtype=torch.bool)   # True = pad
+
+    for i, (x, length) in enumerate(zip(x_list, lengths)):
+        x_padded[i, :length] = x
+        mask[i, :length]     = False  # real hits are NOT masked
+
+    y_tensor = torch.tensor(y_list, dtype=torch.long)
+    return x_padded, mask, y_tensor
+
+
+class PaddedDataModule(pl.LightningDataModule):
     def __init__(self, X_train, y_train, X_val, y_val, X_test, y_test, batch_size):
         super().__init__()
-        # Important: These are Python LISTS of tensors, not a single stacked tensor.
         self.X_train, self.y_train = X_train, y_train
-        self.X_val, self.y_val = X_val, y_val
-        self.X_test, self.y_test = X_test, y_test
+        self.X_val,   self.y_val   = X_val,   y_val
+        self.X_test,  self.y_test  = X_test,  y_test
         self.batch_size = batch_size
 
     def setup(self, stage=None):
-        self.train_ds = NestedDataset(self.X_train, self.y_train)
-        self.val_ds   = NestedDataset(self.X_val, self.y_val)
-        self.test_ds  = NestedDataset(self.X_test, self.y_test)
-
-    def collate_nested(self, batch):
-        """
-        This is where the magic happens. 
-        It takes a batch of individual tensors and 'zips' them into a NestedTensor.
-        """
-        x_list = [item[0] for item in batch]
-        y_list = [item[1] for item in batch]
-
-        # 1. Create the NestedTensor (the efficient ragged structure)
-        x_nested = torch.nested.nested_tensor(x_list,layout=torch.jagged)
-        
-        # 2. Convert labels to a standard tensor
-        y_tensor = torch.tensor(y_list, dtype=torch.long)
-        
-        return x_nested, y_tensor
+        self.train_ds = TrackDataset(self.X_train, self.y_train)
+        self.val_ds   = TrackDataset(self.X_val,   self.y_val)
+        self.test_ds  = TrackDataset(self.X_test,  self.y_test)
 
     def train_dataloader(self):
         return DataLoader(
-            self.train_ds, 
-            batch_size=self.batch_size, 
-            shuffle=True, 
-            collate_fn=self.collate_nested,
-            num_workers=4  # Helps with data loading speed
+            self.train_ds,
+            batch_size=self.batch_size,
+            shuffle=True,
+            collate_fn=collate_padded,
+            num_workers=31,
         )
 
     def val_dataloader(self):
         return DataLoader(
-            self.val_ds, 
-            batch_size=self.batch_size, 
-            collate_fn=self.collate_nested
+            self.val_ds,
+            batch_size=self.batch_size,
+            collate_fn=collate_padded,
+            num_workers=4,
         )
 
     def test_dataloader(self):
         return DataLoader(
-            self.test_ds, 
-            batch_size=self.batch_size, 
-            collate_fn=self.collate_nested
+            self.test_ds,
+            batch_size=self.batch_size,
+            collate_fn=collate_padded,
+            num_workers=4,
         )
