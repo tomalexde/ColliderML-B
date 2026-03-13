@@ -3,7 +3,7 @@ from Transformer.Encoder import TransformerEncoderLayer
 from collections import OrderedDict
 
 
-class TrackT(nn.Module):
+class RecoT(nn.Module):
     """
     Transformer for particle track classification.
     Uses padded dense tensors + key_padding_mask (standard approach).
@@ -19,7 +19,7 @@ class TrackT(nn.Module):
         output_size: int = 4,
     ):
         super().__init__()
-        self.name = "TrackTransformer"
+        self.name = "RecoTransformer"
 
         # 1. Coordinate embedding
         self.embedding  = nn.Linear(feature_dim, hidden_size)

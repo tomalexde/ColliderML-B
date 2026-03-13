@@ -1,5 +1,5 @@
 from common_imports import *
-from Transformer.TrackTransformer import TrackT
+from Transformer.RecoTransformer import RecoT
 from torchmetrics.classification import MulticlassConfusionMatrix
 
 
@@ -13,7 +13,7 @@ class LightningNeuralNetwork(pl.LightningModule):
         self.conf_matrix = MulticlassConfusionMatrix(num_classes=output_size)
         self.class_names = ['TTBar', 'GGF', 'Dihiggs', 'H-Portal']
 
-        self.model = TrackT(
+        self.model = RecoT(
             feature_dim=feature_dim,
             hidden_size=hidden_size,
             num_heads=num_heads,

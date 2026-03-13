@@ -48,8 +48,8 @@ def main(hparams):
     # Create checkpoint callback to save on minimum validation loss
     checkpoint_callback = ModelCheckpoint(
         monitor='val_auc',
-        dirpath='checkpoints/',
-        filename='TrackT-{epoch:02d}-{val_loss:.4f}-{val_auc:.4f}',
+        dirpath='checkpoints(reco)/',
+        filename='RecoT-{epoch:02d}-{val_loss:.4f}-{val_auc:.4f}',
         save_top_k=1,
         mode='max'
     )
@@ -74,7 +74,7 @@ def main(hparams):
         output_size=4,
         learning_rate=hparams.lr
     )
-    print("Starting training on TrackT...")
+    print("Starting training on RecoT...")
     trainer.fit(model, data_module)
 
     #testing

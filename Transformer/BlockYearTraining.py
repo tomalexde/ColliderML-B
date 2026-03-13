@@ -61,15 +61,15 @@ def main(hparams):
         checkpoint_callback = ModelCheckpoint(
             monitor='val_auc',
             # Put each year in its own sub-folder
-            dirpath=f'checkpoints/blockyear/year_{year}/', 
-            filename='TrackT-{epoch:02d}-{val_auc:.4f}',
+            dirpath=f'checkpoints(reco)/blockyear/year_{year}/', 
+            filename='RecoT-{epoch:02d}-{val_auc:.4f}',
             save_top_k=1,
             mode='max',
             save_last=True  # This creates: checkpoints/blockyear/year_1/last.ckpt
         )
 
         # Create a logger
-        logger = TensorBoardLogger("lightning_logs", name="TrackT")
+        logger = TensorBoardLogger("lightning_logs", name="RecoT")
 
         # Create early stopping callback
         early_stopping = EarlyStopping(
@@ -112,7 +112,7 @@ def main(hparams):
                 # Fallback: In case Year 1 crashed before finishing
                 raise FileNotFoundError(f"Missing last.ckpt for Year {year-11}")
         # --- Train the model ---
-        print(f"Starting year {year} training on TrackT...")
+        print(f"Starting year {year} training on RecoT...")
         trainer.fit(model, data_module)
 
         #testing
