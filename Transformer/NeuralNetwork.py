@@ -27,6 +27,9 @@ class LightningNeuralNetwork(pl.LightningModule):
     def forward(self, x, mask):
         # Both x (B, max_hits, 3) and mask (B, max_hits) are required
         return self.model(x, mask)
+    
+    def on_test_epoch_start(self): #Clears confusion matrix between runs
+        self.conf_matrix.reset()
 
     def training_step(self, batch, batch_idx):
         x, mask, y = batch   # DataModule now returns (x, mask, y)

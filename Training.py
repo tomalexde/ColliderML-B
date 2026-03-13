@@ -3,6 +3,7 @@ from argparse import ArgumentParser
 from Transformer.NeuralNetwork import LightningNeuralNetwork
 from Data.DataPrepare import prepare_it_all
 import io
+import wandb
 # Lighting and WANDB
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
@@ -13,6 +14,9 @@ from pytorch_lightning.loggers import WandbLogger
 torch.set_float32_matmul_precision('high')
 
 def main(hparams):
+    #WANDB
+    print("Login to WANDB")
+    wandb.login()
     # Data Preparation
     # We prepare the nested data lists and wrap them in the DataModule
     print("Preparing nested physics data...")
@@ -26,9 +30,11 @@ def main(hparams):
         batch_size = hparams.batch_size
     )
     # Create a logger
-    logger = TensorBoardLogger("lightning._logs", name="TrackT")
-    #wandb_logger = WandbLogger(project='ColliderML-GroupB')
-    #wandb_logger.experiment.config["batch_size"] = hparams.batch_size
+    wandb_logger = WandbLogger(
+        project=hparams.wandb_project,
+        name=hparams.run_name,    # label shown in the W&B run list
+        config=vars(hparams),     # logs all CLI args as hyperparameters
+    )
 
     # Create early stopping callback
     early_stopping = EarlyStopping(
@@ -51,7 +57,7 @@ def main(hparams):
     # Create a trainer with tensorboard logging, early stopping, and checkpoint saving
     trainer = pl.Trainer(
         max_epochs=hparams.max_epochs,
-        logger=logger,
+        logger=wandb_logger,
         callbacks=[early_stopping, checkpoint_callback],
         accelerator=hparams.accelerator, 
         devices=hparams.devices,
@@ -78,28 +84,36 @@ def main(hparams):
     test_results = trainer.test(best_model, data_module)
     print(test_results)
 
-    # --- New: Plot the Results ---
+    # Push test metrics to W&B (test_step metrics aren't logged automatically)
+    wandb_logger.experiment.log({
+        'test_auc':  test_results[0].get('test_auc'),
+        'test_loss': test_results[0].get('test_loss'),
+    })
+
+    # --- Plot the Confusion Matrix ---
     cm = best_model.final_cm
-    class_names = ['TTBar', 'GGF', 'Dihiggs', 'H-Portal']
-    
-    # Normalize for the plot
-    cm_perc = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis] * 100
-    #df_perc = pd.DataFrame(cm_perc, index=class_names, columns=class_names)
-    #df_perc.to_csv('results_efficiencies.csv')
+    if cm is None:
+        print("WARNING: final_cm is None — confusion matrix was not populated during test.")
+    else:
+        class_names = ['TTBar', 'GGF', 'Dihiggs', 'H-Portal']
+        cm_perc = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis] * 100
 
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(cm_perc, annot=True, fmt='.1f', cmap='viridis', 
-                xticklabels=class_names, yticklabels=class_names)
-    plt.ylabel('True Class')
-    plt.xlabel('Predicted Class')
-    plt.title('Final Physics Classification Accuracy (%)')
-    plt.savefig('test_confusion_matrix.png')
-    plt.show()
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(cm_perc, annot=True, fmt='.1f', cmap='viridis',
+                    xticklabels=class_names, yticklabels=class_names)
+        plt.ylabel('True Class')
+        plt.xlabel('Predicted Class')
+        plt.title('Final Physics Classification Accuracy (%)')
+        plt.tight_layout()
+        save_path = 'test_confusion_matrix.png'
+        plt.savefig(save_path, dpi=150)
+        plt.close()  # Free memory; plt.show() does nothing on SLURM (no display)
+        print(f"Confusion matrix saved to: {os.path.abspath(save_path)}")
 
-    #print("\n--- Results Exported ---")
-    #print("Efficiencies saved to: results_efficiencies.csv")
-    # [optional] finish the wandb run, necessary in notebooks
-    # wandb.finish()
+        wandb_logger.experiment.log({
+            'confusion_matrix': wandb.Image(save_path)
+        })
+    wandb.finish()
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -123,6 +137,13 @@ if __name__ == "__main__":
     parser.add_argument("--layers", type=int, default=6)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--patience", type=int, default=50)
+
+    # W&B
+    parser.add_argument("--wandb_project",  default="ColliderML-GroupB")
+    parser.add_argument("--run_name",       default=None,
+                        help="Name for this W&B run (e.g. 'baseline_purity2'). "
+                             "Leave blank for W&B to auto-generate one.")
+ 
 
     args = parser.parse_args()
     main(args)

@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 import seaborn as sns
+import matplotlib
+matplotlib.use('Agg')  # Headless backend — required on SLURM/HPC nodes (no display)
 import matplotlib.pyplot as plt
 import os
 import math
