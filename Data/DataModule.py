@@ -43,10 +43,6 @@ def collate_padded(batch):
     by zero-padding to the longest sequence in the batch, and build a boolean
     key_padding_mask so the transformer ignores the pad positions.
 
-    We also pad the sequence length to the next multiple of 8 so that all
-    SDPA GEMMs (which have k=seq_len) satisfy the bf16 cuBLAS alignment
-    requirement (all GEMM dims must be multiples of 8).
-
     Returns:
         x_padded  : (B, max_hits_padded, 3)   float32 dense tensor
         mask      : (B, max_hits_padded)       bool tensor
@@ -58,10 +54,7 @@ def collate_padded(batch):
     y_list = [item[1] for item in batch]
 
     lengths    = [x.shape[0] for x in x_list]
-    max_len_raw = max(lengths)
-
-    # Round up to next multiple of 8 for bf16 GEMM alignment
-    max_len = ((max_len_raw + 7) // 8) * 8
+    max_len = max(lengths)
 
     B    = len(x_list)
     feat = x_list[0].shape[1]  # 3
