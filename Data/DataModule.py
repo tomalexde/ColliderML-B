@@ -21,7 +21,25 @@ def DataToDataModule(batch_size, X1, I1, X2, I2, X3, I3, X4, I4):
         X_test,  y_test,
         batch_size=batch_size
     )
+def DataToDataModule_1d(batch_size, X1, I1):
+    """
+    Converts ragged hit lists and labels into a PaddedDataModule.
+    """
+    X = X1 
+    y = I1
 
+    X_train_val, X_test, y_train_val, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y)
+
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_train_val, y_train_val, test_size=0.25, random_state=42, stratify=y_train_val)
+
+    return PaddedDataModule(
+        X_train, y_train,
+        X_val,   y_val,
+        X_test,  y_test,
+        batch_size=batch_size
+    )
 
 class TrackDataset(Dataset):
     """Holds a list of variable-length hit tensors and their event labels."""

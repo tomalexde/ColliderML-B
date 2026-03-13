@@ -330,3 +330,54 @@ def create_complex_dataset(purity_array, event_list, id_list, max_hits, batch_si
         print(f"  {process_names[uid]}: {np.sum(all_ids == uid)} events")
     
     return DataToDataModule_1d(batch_size,all_X, all_ids)
+
+def prepare_tracks_only(num_events, batch_size):
+    """
+    Prepare track parameter data from all four datasets.
+
+    Reads d0, z0, phi, theta, qop directly from tracks parquet files.
+
+    Parameters:
+    -----------
+    num_events : int or array-like
+        Number of events (or array of event IDs) to load from each dataset.
+
+    Returns:
+    --------
+    X_list : list of torch.Tensor
+        Combined list of track parameter tensors from all four processes,
+        each of shape [n_tracks, 5] with columns [d0, z0, phi, theta, qop]
+    ids : np.ndarray
+        Array of process IDs (0=ttbar, 1=ggf, 2=dihiggs, 3=higgs_portal) for each event
+    """
+    filepath = Filepath()
+
+    TRACK_PARAMS = ['d0', 'z0', 'phi', 'theta', 'qop']
+
+    dir_map = {
+        0: filepath.ttbar_base_tracks_dir,
+        1: filepath.ggf_base_tracks_dir,
+        2: filepath.dihiggs_base_tracks_dir,
+        3: filepath.higgs_portal_base_tracks_dir,
+    }
+
+    # Convert num_events to array if needed
+    if isinstance(num_events, int):
+        events = np.arange(num_events, dtype=np.int32)
+    else:
+        events = np.asarray(list(num_events), dtype=np.int32)
+
+    all_X   = []
+    all_ids = []
+
+    for event_id, tracks_dir in dir_map.items():
+        tracks_df = utils.read_events_tracks(tracks_dir, events)
+
+        for eid, group in tracks_df.groupby('event_id'):
+            params = group[TRACK_PARAMS].values  # shape [n_tracks, 5]
+            all_X.append(torch.tensor(params, dtype=torch.float32))
+            all_ids.append(event_id)
+
+    all_ids = np.array(all_ids, dtype=np.int32)
+
+    return DataToDataModule_1d(batch_size,all_X, all_ids)
