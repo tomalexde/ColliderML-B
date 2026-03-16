@@ -1,6 +1,6 @@
 from common_imports import *
 from torch.utils.data import DataLoader, Dataset
-
+import pickle
 
 def DataToDataModule(batch_size, X1, I1, X2, I2, X3, I3, X4, I4):
     """
@@ -21,7 +21,60 @@ def DataToDataModule(batch_size, X1, I1, X2, I2, X3, I3, X4, I4):
         X_test,  y_test,
         batch_size=batch_size
     )
+def DataToDataModule_1d(batch_size, X1, I1):
+    """
+    Converts ragged hit lists and labels into a PaddedDataModule.
+    """
+    X = X1 
+    y = I1
 
+    X_train_val, X_test, y_train_val, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y)
+
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_train_val, y_train_val, test_size=0.25, random_state=42, stratify=y_train_val)
+
+    return PaddedDataModule(
+        X_train, y_train,
+        X_val,   y_val,
+        X_test,  y_test,
+        batch_size=batch_size
+    )
+
+def save_datamodule(data_module, filepath):
+    """
+    Saves a PaddedDataModule to disk using pickle.
+    
+    Parameters:
+    -----------
+    data_module : PaddedDataModule
+        The datamodule to save
+    filepath : str
+        Path to save the pickle file e.g. '/global/cfs/cdirs/m4958/usr/emil_sd/data_module.pkl'
+    """
+    with open(filepath, 'wb') as f:
+        pickle.dump(data_module, f)
+    print(f"DataModule saved to {filepath}")
+
+
+def load_datamodule(filepath):
+    """
+    Loads a PaddedDataModule from disk using pickle.
+    
+    Parameters:
+    -----------
+    filepath : str
+        Path to the pickle file
+    
+    Returns:
+    --------
+    data_module : PaddedDataModule
+        The loaded datamodule, ready to pass to trainer.fit()
+    """
+    with open(filepath, 'rb') as f:
+        data_module = pickle.load(f)
+    print(f"DataModule loaded from {filepath}")
+    return data_module
 
 class TrackDataset(Dataset):
     """Holds a list of variable-length hit tensors and their event labels."""
@@ -89,7 +142,7 @@ class PaddedDataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             shuffle=True,
             collate_fn=collate_padded,
-            num_workers=31,
+            num_workers=0,
         )
 
     def val_dataloader(self):
@@ -97,7 +150,7 @@ class PaddedDataModule(pl.LightningDataModule):
             self.val_ds,
             batch_size=self.batch_size,
             collate_fn=collate_padded,
-            num_workers=4,
+            num_workers=0,
         )
 
     def test_dataloader(self):
@@ -105,5 +158,5 @@ class PaddedDataModule(pl.LightningDataModule):
             self.test_ds,
             batch_size=self.batch_size,
             collate_fn=collate_padded,
-            num_workers=4,
+            num_workers=0,
         )
