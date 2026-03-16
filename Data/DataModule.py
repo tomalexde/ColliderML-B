@@ -41,7 +41,7 @@ def DataToDataModule_1d(batch_size, X1, I1):
         batch_size=batch_size
     )
 
-def save_datamodule(data_module, filepath):
+def DataSave(data_module, filepath):
     """
     Saves a PaddedDataModule to disk using pickle.
     
@@ -57,7 +57,7 @@ def save_datamodule(data_module, filepath):
     print(f"DataModule saved to {filepath}")
 
 
-def load_datamodule(filepath):
+def DataLoad(filepath):
     """
     Loads a PaddedDataModule from disk using pickle.
     
