@@ -83,7 +83,7 @@ def prepare_data(
         if len(track_hit_ids) > 0:
             track_pids = np.unique(all_hits[track_hit_ids, 3])
         else:
-            track_pids = np.array([], dtype=all_hits.dtype[3])
+            track_pids = np.array([], dtype=all_hits.dtype)
         
         num_tracks = len(track_pids)  # Number of unique particles with tracks
         
