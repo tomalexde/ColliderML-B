@@ -107,7 +107,7 @@ class PaddedDataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             shuffle=True,
             collate_fn=collate_padded,
-            num_workers=31,
+            num_workers=0,
         )
 
     def val_dataloader(self):
@@ -115,7 +115,7 @@ class PaddedDataModule(pl.LightningDataModule):
             self.val_ds,
             batch_size=self.batch_size,
             collate_fn=collate_padded,
-            num_workers=4,
+            num_workers=0,
         )
 
     def test_dataloader(self):
@@ -123,5 +123,5 @@ class PaddedDataModule(pl.LightningDataModule):
             self.test_ds,
             batch_size=self.batch_size,
             collate_fn=collate_padded,
-            num_workers=4,
+            num_workers=0,
         )
