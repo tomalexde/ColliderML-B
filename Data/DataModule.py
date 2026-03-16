@@ -1,4 +1,5 @@
 from common_imports import *
+import pickle
 from torch.utils.data import DataLoader, Dataset
 
 
@@ -40,6 +41,40 @@ def DataToDataModule_1d(batch_size, X1, I1):
         X_test,  y_test,
         batch_size=batch_size
     )
+def save_datamodule(data_module, filepath):
+    """
+    Saves a PaddedDataModule to disk using pickle.
+    
+    Parameters:
+    -----------
+    data_module : PaddedDataModule
+        The datamodule to save
+    filepath : str
+        Path to save the pickle file e.g. '/global/cfs/cdirs/m4958/usr/emil_sd/data_module.pkl'
+    """
+    with open(filepath, 'wb') as f:
+        pickle.dump(data_module, f)
+    print(f"DataModule saved to {filepath}")
+
+
+def load_datamodule(filepath):
+    """
+    Loads a PaddedDataModule from disk using pickle.
+    
+    Parameters:
+    -----------
+    filepath : str
+        Path to the pickle file
+    
+    Returns:
+    --------
+    data_module : PaddedDataModule
+        The loaded datamodule, ready to pass to trainer.fit()
+    """
+    with open(filepath, 'rb') as f:
+        data_module = pickle.load(f)
+    print(f"DataModule loaded from {filepath}")
+    return data_module
 
 class TrackDataset(Dataset):
     """Holds a list of variable-length hit tensors and their event labels."""
