@@ -49,7 +49,7 @@ def main(hparams):
     checkpoint_callback = ModelCheckpoint(
         monitor='val_auc',
         dirpath='checkpoints/',
-        filename='TrackT-{epoch:02d}-{val_loss:.4f}-{val_auc:.4f}',
+        filename='TrackT-Baseline-{epoch:02d}-{val_loss:.4f}-{val_auc:.4f}',
         save_top_k=1,
         mode='max'
     )
@@ -132,8 +132,8 @@ if __name__ == "__main__":
     
     
     # Model Architecture Args
-    parser.add_argument("--hidden_size", type=int, default=256)
-    parser.add_argument("--nhead", type=int, default=8)
+    parser.add_argument("--hidden_size", type=int, default=512)
+    parser.add_argument("--nhead", type=int, default=16)
     parser.add_argument("--layers", type=int, default=6)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--patience", type=int, default=50)

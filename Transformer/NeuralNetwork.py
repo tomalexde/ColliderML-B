@@ -81,21 +81,6 @@ class LightningNeuralNetwork(pl.LightningModule):
             lr=self.learning_rate,
             weight_decay=0.01,
         )
-
-        max_epochs      = self.trainer.max_epochs
-        steps_per_epoch = len(self.trainer.datamodule.train_dataloader())
-        total_steps     = max_epochs * steps_per_epoch
-
-        scheduler = torch.optim.lr_scheduler.OneCycleLR(
-            optimizer,
-            max_lr=self.learning_rate,
-            total_steps=total_steps,
-            pct_start=0.1,
-            anneal_strategy='cos',
-            div_factor=25.0,
-            final_div_factor=1e4,
-        )
         return {
-            "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
+            "optimizer": optimizer
         }

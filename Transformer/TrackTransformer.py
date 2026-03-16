@@ -40,10 +40,8 @@ class TrackT(nn.Module):
         ])
 
         # 4. Classification head
-        self.classifier = nn.Sequential(
-            nn.Linear(hidden_size * 2, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, output_size),
+        self.classifier_simple = nn.Sequential(
+            nn.Linear(hidden_size * 2, output_size),
         )
 
     def forward(
@@ -59,12 +57,12 @@ class TrackT(nn.Module):
             logits: (B, output_size)
         """
         # Step 1 — embed hit coordinates
-        x = self.embedding(x) + self.pos_encoder(x)
+        x = self.embedding(x)
 
         # Step 2 — transformer encoder (pad positions masked out in attention)
         for layer in self.layers:
             x = layer(x, key_padding_mask=key_padding_mask)
-        x = self.norm_final(x)
+        #x = self.norm_final(x)
 
         # Step 3 — mask-aware global pooling
         # Zero out pad positions so they don't affect mean or max
@@ -79,4 +77,4 @@ class TrackT(nn.Module):
         pooled = torch.cat([avg_pool, max_pool], dim=1)  # (B, hidden_size * 2)
 
         # Step 4 — classify
-        return self.classifier(pooled)
+        return self.classifier_simple(pooled)
