@@ -1,6 +1,6 @@
 from common_imports import *
 from torch.utils.data import DataLoader, Dataset
-
+import pickle
 
 def DataToDataModule(batch_size, X1, I1, X2, I2, X3, I3, X4, I4):
     X = X1 + X2 + X3 + X4
@@ -18,7 +18,60 @@ def DataToDataModule(batch_size, X1, I1, X2, I2, X3, I3, X4, I4):
         X_test,  y_test,
         batch_size=batch_size
     )
+def DataToDataModule_1d(batch_size, X1, I1):
+    """
+    Converts ragged hit lists and labels into a PaddedDataModule.
+    """
+    X = X1 
+    y = I1
 
+    X_train_val, X_test, y_train_val, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y)
+
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_train_val, y_train_val, test_size=0.25, random_state=42, stratify=y_train_val)
+
+    return PaddedDataModule(
+        X_train, y_train,
+        X_val,   y_val,
+        X_test,  y_test,
+        batch_size=batch_size
+    )
+
+def save_datamodule(data_module, filepath):
+    """
+    Saves a PaddedDataModule to disk using pickle.
+    
+    Parameters:
+    -----------
+    data_module : PaddedDataModule
+        The datamodule to save
+    filepath : str
+        Path to save the pickle file e.g. '/global/cfs/cdirs/m4958/usr/emil_sd/data_module.pkl'
+    """
+    with open(filepath, 'wb') as f:
+        pickle.dump(data_module, f)
+    print(f"DataModule saved to {filepath}")
+
+
+def load_datamodule(filepath):
+    """
+    Loads a PaddedDataModule from disk using pickle.
+    
+    Parameters:
+    -----------
+    filepath : str
+        Path to the pickle file
+    
+    Returns:
+    --------
+    data_module : PaddedDataModule
+        The loaded datamodule, ready to pass to trainer.fit()
+    """
+    with open(filepath, 'rb') as f:
+        data_module = pickle.load(f)
+    print(f"DataModule loaded from {filepath}")
+    return data_module
 
 class TrackDataset(Dataset):
     def __init__(self, X, y):
@@ -37,29 +90,6 @@ def sort_hits_by_radius(x: torch.Tensor) -> torch.Tensor:
     """
     Option 1: Sort hits by cylindrical radius r = sqrt(x^2 + y^2).
 
-    Why radius? The ATLAS/CMS tracker is cylindrical — hits from the same
-    particle form a radial arc outward from the interaction point. Sorting by
-    radius groups spatially proximate hits together in the sequence, so a
-    sliding window captures physically meaningful neighbourhoods instead of
-    arbitrary assembly order.
-
-    x: (N, 3) tensor of [x, y, z] hit coordinates.
-    Returns the same tensor with rows reordered by ascending radius.
-    """
-    radius = (x[:, 0] ** 2 + x[:, 1] ** 2).sqrt()   # (N,)
-    order  = radius.argsort()
-    return x[order]
-
-
-def collate_padded(batch, sort_by_radius: bool = True):
-    """
-    Collate variable-length hit tensors into a padded dense batch.
-
-    sort_by_radius: if True (default), hits within each event are sorted by
-    cylindrical radius before padding. This makes the sliding window in
-    MultiHeadAttention physically meaningful — nearby positions in the
-    sequence correspond to nearby detector layers.
-
     Returns:
         x_padded : (B, max_hits_padded, 3)   float32
         mask     : (B, max_hits_padded)       bool, True = pad
@@ -68,12 +98,8 @@ def collate_padded(batch, sort_by_radius: bool = True):
     x_list = [item[0] for item in batch]
     y_list = [item[1] for item in batch]
 
-    # --- Option 1: sort each event's hits by radius ----------------------
-    if sort_by_radius:
-        x_list = [sort_hits_by_radius(x) for x in x_list]
-
-    lengths = [x.shape[0] for x in x_list]
-    max_len = max(lengths)   # pad to longest sequence in batch
+    lengths    = [x.shape[0] for x in x_list]
+    max_len = max(lengths)
 
     B    = len(x_list)
     feat = x_list[0].shape[1]   # 3
@@ -108,7 +134,7 @@ class PaddedDataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             shuffle=True,
             collate_fn=collate_padded,
-            num_workers=31,
+            num_workers=0,
         )
 
     def val_dataloader(self):
@@ -116,7 +142,7 @@ class PaddedDataModule(pl.LightningDataModule):
             self.val_ds,
             batch_size=self.batch_size,
             collate_fn=collate_padded,
-            num_workers=4,
+            num_workers=0,
         )
 
     def test_dataloader(self):
@@ -124,5 +150,5 @@ class PaddedDataModule(pl.LightningDataModule):
             self.test_ds,
             batch_size=self.batch_size,
             collate_fn=collate_padded,
-            num_workers=4,
+            num_workers=0,
         )

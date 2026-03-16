@@ -27,9 +27,6 @@ class LightningNeuralNetwork(pl.LightningModule):
     def forward(self, x, mask):
         # Both x (B, max_hits, 3) and mask (B, max_hits) are required
         return self.model(x, mask)
-    
-    def on_test_epoch_start(self): #Clears confusion matrix between runs
-        self.conf_matrix.reset()
 
     def training_step(self, batch, batch_idx):
         x, mask, y = batch   # DataModule now returns (x, mask, y)
@@ -47,33 +44,85 @@ class LightningNeuralNetwork(pl.LightningModule):
         self.log('train_loss', loss)
         return loss
 
+    def on_validation_epoch_start(self):
+        # Buffers to collect predictions and labels across all batches
+        # They are lists of tensors — gathered across GPUs in epoch_end
+        self._val_preds  = []
+        self._val_labels = []
+
     def validation_step(self, batch, batch_idx):
         x, mask, y = batch
         y_hat = self(x, mask)
         loss  = self.loss_function(y_hat, y)
 
-        y_cpu        = y.cpu().detach().numpy()
-        y_hat_proba  = torch.softmax(y_hat, dim=1).cpu().detach().numpy()
-        auc = roc_auc_score(y_cpu, y_hat_proba, multi_class='ovr',
-                            labels=self.all_possible_labels)
-        self.log('val_auc',  auc)
-        self.log('val_loss', loss)
+        # Accumulate softmax probabilities and labels (keep on GPU as tensors)
+        self._val_preds.append(torch.softmax(y_hat, dim=1).detach())
+        self._val_labels.append(y.detach())
+
+        self.log('val_loss', loss, sync_dist=True)
         return loss
+
+    def on_validation_epoch_end(self):
+        # Concatenate this GPU's batches into one tensor each
+        preds  = torch.cat(self._val_preds,  dim=0)   # (N_local, 4)
+        labels = torch.cat(self._val_labels, dim=0)   # (N_local,)
+
+        # self.all_gather() collects tensors from all GPUs onto every rank,
+        # returning shape (num_gpus, N_local, 4) / (num_gpus, N_local).
+        # We then flatten to get the full dataset on every rank.
+        all_preds  = self.all_gather(preds).view(-1, preds.shape[-1])   # (N_total, 4)
+        all_labels = self.all_gather(labels).view(-1)                    # (N_total,)
+
+        # Compute exact AUC on rank 0 only — all ranks have identical data
+        # but we only need to log once to avoid duplicate W&B entries
+        if self.trainer.is_global_zero:
+            y_cpu       = all_labels.cpu().numpy()
+            y_hat_cpu   = all_preds.cpu().numpy()
+            auc = roc_auc_score(y_cpu, y_hat_cpu, multi_class='ovr',
+                                labels=self.all_possible_labels)
+            # rank_zero_only=True: only rank 0 logs, preventing duplicate entries
+            self.log('val_auc', auc, rank_zero_only=True)
+
+        # Free buffers
+        self._val_preds  = []
+        self._val_labels = []
+
+    def on_test_epoch_start(self):
+        self.conf_matrix.reset()
+        self._test_preds  = []
+        self._test_labels = []
 
     def test_step(self, batch, batch_idx):
         x, mask, y = batch
         y_hat = self(x, mask)
         loss  = self.loss_function(y_hat, y)
 
-        y_cpu       = y.cpu().detach().numpy()
-        y_hat_proba = torch.softmax(y_hat, dim=1).cpu().detach().numpy()
-        auc = roc_auc_score(y_cpu, y_hat_proba, multi_class='ovr',
-                            labels=self.all_possible_labels)
-        self.log('test_auc',  auc)
-        self.log('test_loss', loss)
+        self._test_preds.append(torch.softmax(y_hat, dim=1).detach())
+        self._test_labels.append(y.detach())
+        self.log('test_loss', loss, sync_dist=True)
         self.conf_matrix.update(y_hat, y)
-        self.final_cm = self.conf_matrix.compute().cpu().numpy()
         return loss
+
+    def on_test_epoch_end(self):
+        # Gather predictions from all GPUs — same approach as validation
+        preds  = torch.cat(self._test_preds,  dim=0)
+        labels = torch.cat(self._test_labels, dim=0)
+
+        all_preds  = self.all_gather(preds).view(-1, preds.shape[-1])
+        all_labels = self.all_gather(labels).view(-1)
+
+        if self.trainer.is_global_zero:
+            y_cpu     = all_labels.cpu().numpy()
+            y_hat_cpu = all_preds.cpu().numpy()
+            auc = roc_auc_score(y_cpu, y_hat_cpu, multi_class='ovr',
+                                labels=self.all_possible_labels)
+            self.log('test_auc', auc, rank_zero_only=True)
+
+        self._test_preds  = []
+        self._test_labels = []
+
+        # Confusion matrix — torchmetrics syncs across GPUs here automatically
+        self.final_cm = self.conf_matrix.compute().cpu().numpy()
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(
