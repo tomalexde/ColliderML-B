@@ -2,6 +2,7 @@ from common_imports import *
 from argparse import ArgumentParser
 from Transformer.NeuralNetwork import LightningNeuralNetwork
 from Data.DataPrepare import prepare_it_all
+from Data.DataModule import DataLoad
 import io
 import wandb
 # Lighting and WANDB
@@ -21,14 +22,17 @@ def main(hparams):
     # We prepare the nested data lists and wrap them in the DataModule
     print("Preparing nested physics data...")
     # Adjust events/purity/maxhits based on your GPU capacity
-    if hparams.num_events == 0:
-        hparams.num_events = hparams.num_events_list
-    data_module = prepare_it_all(
-        events=hparams.num_events, 
-        purity_scale=hparams.purity, 
-        maxhits=hparams.max_hits,
-        batch_size = hparams.batch_size
-    )
+    if hparams.data_file != None:
+        data_module = DataLoad(hparams.data_file)
+    else:
+        if hparams.num_events == 0:
+            hparams.num_events = hparams.num_events_list
+        data_module = prepare_it_all(
+            events=hparams.num_events, 
+            purity_scale=hparams.purity, 
+            maxhits=hparams.max_hits,
+            batch_size = hparams.batch_size
+        )
     # Create a logger
     wandb_logger = WandbLogger(
         project=hparams.wandb_project,
@@ -122,9 +126,10 @@ if __name__ == "__main__":
     parser.add_argument("--accelerator", default="gpu")
     parser.add_argument("--devices", type=int, default=1)
     parser.add_argument("--max_epochs", type=int, default=500)
-    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--batch_size", type=int, default=128)
     
     # Physics/Data Args
+    parser.add_argument("--data_file", type=str, default=None)
     parser.add_argument("--num_events", type=int, default=0)
     parser.add_argument("--num_events_list", type=int, default=[0])
     parser.add_argument("--purity", type=float, default=0)
@@ -134,7 +139,7 @@ if __name__ == "__main__":
     # Model Architecture Args
     parser.add_argument("--hidden_size", type=int, default=256)
     parser.add_argument("--nhead", type=int, default=8)
-    parser.add_argument("--layers", type=int, default=6)
+    parser.add_argument("--layers", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--patience", type=int, default=50)
 
