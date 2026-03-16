@@ -60,8 +60,8 @@ def prepare_data(
         events = np.asarray(list(num_events), dtype=np.int32)
     
     # Load data efficiently
-    hits_df = utils.read_events_hits(hits_dir, events)
-    tracks_df = utils.read_events_tracks(tracks_dir, events)
+    hits_df = utils_new.read_events_hits(hits_dir, events)
+    tracks_df = utils_new.read_events_tracks(tracks_dir, events)
     
     # Pre-group for fast lookup
     hits_by_event = {eid: group[['x', 'y', 'z']].values 
@@ -198,8 +198,8 @@ def calculate_max_hits_from_purity(
         events = np.asarray(list(num_events), dtype=np.int32)
     
     # Load data efficiently
-    hits_df = utils.read_events_hits(hits_dir, events)
-    tracks_df = utils.read_events_tracks(tracks_dir, events)
+    hits_df = utils_new.read_events_hits(hits_dir, events)
+    tracks_df = utils_new.read_events_tracks(tracks_dir, events)
     
     # Pre-group for fast lookup
     hits_by_event = {eid: group[['x', 'y', 'z']].values 
