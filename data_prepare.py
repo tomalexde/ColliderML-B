@@ -16,14 +16,15 @@ def prepare_data(
     hits_dir,
     tracks_dir,
     event_id,
-    purity_scale,
+    purity,
     max_hits
 ):
     """
-    Prepare ML dataset with track-associated hits and optional raw hits.
+    Prepare ML dataset with track-associated hits and additional particles based on purity.
     
-    Track-associated hits take absolute priority. Raw hits are added based on purity_scale.
-    max_hits parameter takes priority over purity_scale.
+    Track-associated hits are always included. Additional particles are sampled based on
+    purity (0-1), which is the proportion of non-track unique particle IDs to include.
+    No hit is included twice.
     
     Parameters:
     -----------
@@ -35,132 +36,94 @@ def prepare_data(
         Directory path to tracks parquet data
     event_id : int or str
         Single identifier to assign to all output events
-    purity_scale : int/float or False
-        Multiplier for raw hits per track hit.
-        - 0: only track-associated hits
-        - N (positive number): N raw hits per track hit (capped by availability and max_hits)
-        - False: include all available raw hits up to max_hits
+    purity : float [0, 1]
+        Proportion of non-track particle IDs to randomly sample and add.
+        0.0 = only track hits, 1.0 = all non-track particles included
     max_hits : int
-        Maximum hits per event. Takes absolute priority over purity_scale.
+        Maximum hits per event.
     
     Returns:
     --------
-    X : np.ndarray
-        Shape [n_valid_events, max_hits, 3] containing [x, y, z] coordinates
-    masks : np.ndarray
-        Shape [n_valid_events, max_hits] where 0=real data, 1=padding
+    X_list : list of torch.Tensor
+        List of tensors each of shape [n_hits, 3] containing [x, y, z] coordinates
     ids : np.ndarray
         Shape [n_valid_events] all filled with event_id parameter
     """
-    
+    assert 0.0 <= purity <= 1.0, f"purity must be between 0 and 1, got {purity}"
+
     # Convert num_events to array if needed
     if isinstance(num_events, int):
         events = np.arange(num_events, dtype=np.int32)
     else:
         events = np.asarray(list(num_events), dtype=np.int32)
-    
+
     # Load data efficiently
-    hits_df = utils_new.read_events_hits(hits_dir, events)
-    tracks_df = utils_new.read_events_tracks(tracks_dir, events)
-    
+    hits_df   = utils_tracks.read_events_hits(hits_dir, events)
+    tracks_df = utils_tracks.read_events_tracks(tracks_dir, events)
+
     # Pre-group for fast lookup
-    hits_by_event = {eid: group[['x', 'y', 'z']].values 
-                     for eid, group in hits_df.groupby('event_id')}
-    
-    tracks_by_event = {eid: group['hit_ids'].values 
+    hits_by_event   = {eid: group[['x', 'y', 'z', 'particle_id']].values
+                       for eid, group in hits_df.groupby('event_id')}
+    tracks_by_event = {eid: group['hit_ids'].values
                        for eid, group in tracks_df.groupby('event_id')}
-    
-    # Output arrays
-    valid_count = 0
-    X_list = []
-    masks_list = []
+
+    X_list   = []
     ids_list = []
-    
-    # Process each event
+
     for event_id_val in events:
-        # Skip if event not in data
         if event_id_val not in hits_by_event:
             continue
-        
-        all_hits = hits_by_event[event_id_val]
+
+        all_hits             = hits_by_event[event_id_val]  # (N, 4): x, y, z, particle_id
         track_hit_ids_nested = tracks_by_event.get(event_id_val, np.array([], dtype=object))
-        
-        # Flatten and unique all track hit IDs for this event
+
+        # --- Track hits ---
         if len(track_hit_ids_nested) > 0:
             track_hit_ids = np.unique(np.concatenate(track_hit_ids_nested))
+            valid_mask    = (track_hit_ids >= 0) & (track_hit_ids < len(all_hits))
+            track_hit_ids = track_hit_ids[valid_mask]
         else:
             track_hit_ids = np.array([], dtype=np.int32)
-        
-        # Filter valid indices (within bounds, non-negative)
-        valid_mask = (track_hit_ids >= 0) & (track_hit_ids < len(all_hits))
-        track_hit_ids = track_hit_ids[valid_mask]
-        
-        # Extract track-associated hits
+
+        # Particle IDs associated with tracks
         if len(track_hit_ids) > 0:
-            track_hits = all_hits[track_hit_ids]
+            track_pids  = np.unique(all_hits[track_hit_ids, 3])
+            track_hits  = all_hits[track_hit_ids, :3]
         else:
-            track_hits = np.zeros((0, 3), dtype=np.float32)
-        
-        n_track_hits = len(track_hits)
-        
-        # Determine total hits to include
-        filled_count = n_track_hits
-        
-        # Add raw hits if purity_scale is set and space available
-        if filled_count < max_hits:
-            if purity_scale is not False:
-                # Calculate how many raw hits to add
-                n_raw_available = len(all_hits) - n_track_hits
-                n_raw_to_add = int(n_track_hits * purity_scale)
-                n_raw_to_add = min(n_raw_to_add, n_raw_available, max_hits - filled_count)
-            else:
-                # Include all remaining raw hits up to max_hits
-                n_raw_available = len(all_hits) - n_track_hits
-                n_raw_to_add = min(n_raw_available, max_hits - filled_count)
-            
-            if n_raw_to_add > 0:
-                # Get raw hit indices (exclude track hits)
-                track_hit_set = set(track_hit_ids)
-                raw_indices = np.array([i for i in range(len(all_hits)) if i not in track_hit_set], dtype=np.int32)
-                
-                # Randomly sample raw hits (fast)
-                raw_indices = np.random.choice(raw_indices, size=n_raw_to_add, replace=False)
-                raw_hits = all_hits[raw_indices]
-                
-                # Combine track and raw hits
-                hits_data = np.vstack([track_hits, raw_hits])
-                filled_count = len(hits_data)
-            else:
-                hits_data = track_hits
+            track_pids  = np.array([], dtype=all_hits.dtype)
+            track_hits  = np.zeros((0, 3), dtype=np.float32)
+
+        # --- Non-track particles ---
+        # All unique particle IDs in the event not associated with any track
+        all_pids       = np.unique(all_hits[:, 3])
+        non_track_pids = np.setdiff1d(all_pids, track_pids)
+
+        # Sample a proportion of non-track particle IDs
+        n_to_sample = int(len(non_track_pids) * purity)
+        if n_to_sample > 0:
+            sampled_pids = np.random.choice(non_track_pids, size=n_to_sample, replace=False)
         else:
-            # Only track hits (capped at max_hits)
-            hits_data = track_hits[:max_hits]
-            filled_count = len(hits_data)
-        
-        # Create padded array
-        X_event = np.zeros((max_hits, 3), dtype=np.float32)
-        mask_event = np.ones(max_hits, dtype=np.uint8)
-        
-        X_event[:filled_count] = hits_data[:max_hits]
-        mask_event[:filled_count] = 0
-        
-        X_list.append(X_event)
-        masks_list.append(mask_event)
+            sampled_pids = np.array([], dtype=non_track_pids.dtype)
+
+        # Get all hits for sampled particles, excluding any already in track_hit_ids
+        if len(sampled_pids) > 0:
+            particle_mask    = np.isin(all_hits[:, 3], sampled_pids)
+            all_indices      = np.where(particle_mask)[0]
+            # Remove any indices already used as track hits
+            non_duplicate    = np.setdiff1d(all_indices, track_hit_ids)
+            additional_hits  = all_hits[non_duplicate, :3]
+        else:
+            additional_hits  = np.zeros((0, 3), dtype=np.float32)
+
+        # --- Combine and cap ---
+        hits_data = np.vstack([track_hits, additional_hits])
+        hits_data = hits_data[:max_hits]
+
+        X_list.append(torch.tensor(hits_data, dtype=torch.float32))
         ids_list.append(event_id)
-        valid_count += 1
-    
-    # Stack into final arrays
-    if valid_count == 0:
-        # Return empty arrays if no valid events
-        X = np.zeros((0, max_hits, 3), dtype=np.float32)
-        masks = np.zeros((0, max_hits), dtype=np.uint8)
-        ids = np.array([], dtype=type(event_id))
-    else:
-        X = np.stack(X_list, axis=0)
-        masks = np.stack(masks_list, axis=0)
-        ids = np.array(ids_list, dtype=type(event_id))
-    
-    return X, masks, ids
+
+    ids = np.array(ids_list, dtype=type(event_id))
+    return X_list, ids
 
 def calculate_max_hits_from_purity(
     num_events,
