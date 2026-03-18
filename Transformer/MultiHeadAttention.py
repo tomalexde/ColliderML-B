@@ -1,13 +1,16 @@
 from common_imports import *
+from flash_attn import flash_attn_varlen_func
 
 
 class MultiHeadAttention(nn.Module):
     """
-    Multi-head attention for dense padded tensors.
-
-    Uses separate q/k/v projections (original packed_proj + torch.chunk was
-    broken: after norm1(x), query is key is always False so the wrong branch
-    fired). Accepts key_padding_mask to ignore pad hit positions.
+    Multi-head self-attention using flash_attn_varlen_func.
+ 
+    Takes PACKED inputs (no padding) + cu_seqlens instead of a mask.
+    Requires bf16. Works on Ampere+ GPUs (A100, H100, RTX 30xx+).
+ 
+    Memory: O(n) instead of O(n²) — flash-attn tiles the computation and
+    never materialises the full attention matrix.
     """
 
     def __init__(
@@ -41,8 +44,8 @@ class MultiHeadAttention(nn.Module):
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        key_padding_mask: torch.Tensor = None,
-        is_causal: bool = False,
+        cu_seqlens: torch.Tensor,
+        max_seqlen: int,
     ) -> torch.Tensor:
         """
         Args:
@@ -60,28 +63,32 @@ class MultiHeadAttention(nn.Module):
         value = self.v_proj(value)
 
         # Split heads: (B, Hits, D) -> (B, nheads, Hits, D_head)
-        query = query.unflatten(-1, [self.nheads, self.Feature_head]).transpose(1, 2).contiguous()
-        key   = key.unflatten(  -1, [self.nheads, self.Feature_head]).transpose(1, 2).contiguous()
-        value = value.unflatten(-1, [self.nheads, self.Feature_head]).transpose(1, 2).contiguous()
+        #query = query.unflatten(-1, [self.nheads, self.Feature_head]).transpose(1, 2).contiguous()
+        #key   = key.unflatten(  -1, [self.nheads, self.Feature_head]).transpose(1, 2).contiguous()
+        #value = value.unflatten(-1, [self.nheads, self.Feature_head]).transpose(1, 2).contiguous()
 
-        # Build additive attention bias from padding mask
-        attn_bias = None
-        if key_padding_mask is not None:
-            # (B, Hits_kv) -> (B, 1, 1, Hits_kv), broadcast over heads and query positions
-            attn_bias = torch.zeros(
-                key_padding_mask.shape[0], 1, 1, key_padding_mask.shape[1],
-                dtype=query.dtype, device=query.device,
-            )
-            attn_bias.masked_fill_(key_padding_mask.unsqueeze(1).unsqueeze(2), float("-inf"))
+        # Reshape for flash-attn: (total_hits, nheads, head_dim)
+        # flash-attn expects this layout, NOT (B, nheads, seq, head_dim)
+        total_hits = q.shape[0]
+        q = q.view(total_hits, self.nheads, self.Feature_head)
+        k = k.view(total_hits, self.nheads, self.Feature_head)
+        v = v.view(total_hits, self.nheads, self.Feature_head)
 
-        # Scaled dot-product attention
-        attn_output = F.scaled_dot_product_attention(
-            query, key, value,
-            attn_mask=attn_bias,
-            dropout_p=self.dropout if self.training else 0.0,
-            is_causal=is_causal,
+        # flash_attn_varlen_func:
+        #   - cu_seqlens tells it where each event starts/ends
+        #   - attention is automatically blocked at event boundaries
+        #   - no padding mask needed — pad positions don't exist
+        #   - returns (total_hits, nheads, head_dim)
+        out = flash_attn_varlen_func(
+            q, k, v,
+            cu_seqlens_q = cu_seqlens,
+            cu_seqlens_k = cu_seqlens,
+            max_seqlen_q = max_seqlen,
+            max_seqlen_k = max_seqlen,
+            dropout_p    = self.dropout if self.training else 0.0,
+            causal       = False,
         )
-
-        # Merge heads and output projection: (B, nheads, Hits, D_head) -> (B, Hits, D_total)
-        attn_output = attn_output.transpose(1, 2).flatten(-2)
-        return self.out_proj(attn_output)
+ 
+        # Merge heads: (total_hits, nheads, head_dim) -> (total_hits, Feature_total)
+        out = out.view(total_hits, self.nheads * self.Feature_head)
+        return self.out_proj(out)

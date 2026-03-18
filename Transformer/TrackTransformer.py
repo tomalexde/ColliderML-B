@@ -5,9 +5,19 @@ from collections import OrderedDict
 
 class TrackT(nn.Module):
     """
-    Transformer for particle track classification.
-    Uses padded dense tensors + key_padding_mask (standard approach).
-    No precision hacks needed — works cleanly with fp32.
+    Transformer using flash_attn_varlen_func — no padding, packed inputs.
+
+    Input format (from DataModule collate_packed):
+        x_packed   : (total_hits, 3)   all real hits concatenated
+        cu_seqlens : (B+1,) int32      cumulative lengths [0, n0, n0+n1, ...]
+        max_seqlen : int               longest sequence in batch
+
+    bf16 precision is required for flash-attn. Two layers have non-%8 dims
+    that would crash bf16 cuBLAS:
+        - embedding:   Linear(3 → hidden_size)   [feature_dim=3, not %8]
+        - classifier:  Linear(hidden_size → 4)   [output=4, not %8]
+    Both are explicitly run in fp32 via autocast(enabled=False) guards.
+    Everything else runs in bf16 as normal.
     """
 
     def __init__(
@@ -15,68 +25,88 @@ class TrackT(nn.Module):
         feature_dim: int = 3,
         hidden_size: int = 256,
         num_heads: int = 8,
-        num_encoder_layers: int = 4,
+        num_encoder_layers: int = 6,
         output_size: int = 4,
     ):
         super().__init__()
         self.name = "TrackTransformer"
 
-        # 1. Coordinate embedding
-        self.embedding  = nn.Linear(feature_dim, hidden_size)
+        # fp32-only layers (non-%8 dimensions crash bf16 cuBLAS)
+        # Stored as float32 explicitly so autocast doesn't touch them
+        self.embedding   = nn.Linear(feature_dim, hidden_size).float()
+        self.pos_encoder = nn.Sequential(
+            nn.Linear(feature_dim, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+        ).float()
+        self.classifier  = nn.Sequential(
+            nn.Linear(hidden_size * 2, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, output_size),
+        ).float()
+
+        # bf16-safe layers (all dims are multiples of hidden_size)
         self.norm_final = nn.LayerNorm(hidden_size)
-
-        # 2. Geometric positional encoding
-        self.pos_encoder = nn.Sequential(OrderedDict([
-            ("geo_proj", nn.Linear(feature_dim, hidden_size)),
-            ("geo_norm", nn.LayerNorm(hidden_size)),
-            ("geo_relu", nn.ReLU()),
-            ("geo_out",  nn.Linear(hidden_size, hidden_size)),
-        ]))
-
-        # 3. Transformer encoder layers
-        self.layers = nn.ModuleList([
+        self.layers     = nn.ModuleList([
             TransformerEncoderLayer(hidden_size, num_heads, hidden_size * 4)
             for _ in range(num_encoder_layers)
         ])
 
-        # 4. Classification head
-        self.classifier = nn.Sequential(
-            nn.Linear(hidden_size * 2, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, output_size),
-        )
-
     def forward(
         self,
-        x: torch.Tensor,
-        key_padding_mask: torch.Tensor,
+        x_packed:   torch.Tensor,   # (total_hits, 3)       float32 from DataModule
+        cu_seqlens: torch.Tensor,   # (B+1,)  int32
+        max_seqlen: int,
     ) -> torch.Tensor:
         """
-        Args:
-            x:                (B, max_hits, feature_dim)  padded dense tensor
-            key_padding_mask: (B, max_hits)               True = pad position
         Returns:
             logits: (B, output_size)
         """
-        # Step 1 — embed hit coordinates
-        x = self.embedding(x) + self.pos_encoder(x)
+        B = cu_seqlens.shape[0] - 1
 
-        # Step 2 — transformer encoder (pad positions masked out in attention)
+        # ------------------------------------------------------------------
+        # Step 1 — embed coordinates
+        # Run in fp32 (autocast disabled) because Linear(3→hidden) has k=3
+        # which is not a multiple of 8 — bf16 cuBLAS would crash.
+        # ------------------------------------------------------------------
+        with torch.autocast(device_type='cuda', enabled=False):
+            x = self.embedding(x_packed.float()) + self.pos_encoder(x_packed.float())
+
+        # Cast to bf16 for the transformer layers
+        x = x.to(torch.bfloat16)
+
+        # ------------------------------------------------------------------
+        # Step 2 — transformer encoder (packed, no padding)
+        # flash-attn handles attention. FFN and LayerNorm run in bf16.
+        # ------------------------------------------------------------------
         for layer in self.layers:
-            x = layer(x, key_padding_mask=key_padding_mask)
-        x = self.norm_final(x)
+            x = layer(x, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen)
+        x = self.norm_final(x)  # (total_hits, hidden_size)
 
-        # Step 3 — mask-aware global pooling
-        # Zero out pad positions so they don't affect mean or max
-        real_mask = (~key_padding_mask).unsqueeze(-1).to(x.dtype)  # (B, max_hits, 1)
+        # ------------------------------------------------------------------
+        # Step 3 — per-event pooling on packed tensor
+        # cu_seqlens tells us where each event's hits are in the packed tensor
+        # ------------------------------------------------------------------
+        x_fp32 = x.float()   # back to fp32 for pooling + classifier
 
-        # Mean: sum real hits / count real hits
-        avg_pool = (x * real_mask).sum(dim=1) / real_mask.sum(dim=1).clamp(min=1)
+        avg_pool = torch.zeros(B, x.shape[-1], device=x.device, dtype=torch.float32)
+        max_pool = torch.full((B, x.shape[-1]), float('-inf'), device=x.device, dtype=torch.float32)
 
-        # Max: set pad positions to -inf so they never win
-        max_pool = x.masked_fill(key_padding_mask.unsqueeze(-1), float("-inf")).max(dim=1).values
+        for i in range(B):
+            start = cu_seqlens[i].item()
+            end   = cu_seqlens[i + 1].item()
+            event = x_fp32[start:end]       # (n_hits_i, hidden_size)
 
-        pooled = torch.cat([avg_pool, max_pool], dim=1)  # (B, hidden_size * 2)
+            avg_pool[i] = event.mean(dim=0)
+            max_pool[i] = event.max(dim=0).values
 
-        # Step 4 — classify
-        return self.classifier(pooled)
+        pooled = torch.cat([avg_pool, max_pool], dim=1)   # (B, hidden_size * 2)
+
+        # ------------------------------------------------------------------
+        # Step 4 — classify in fp32
+        # Linear(hidden*2 → hidden) is fine in bf16 but Linear(hidden → 4)
+        # has output_dim=4 which is not %8 — run whole head in fp32.
+        # ------------------------------------------------------------------
+        with torch.autocast(device_type='cuda', enabled=False):
+            return self.classifier(pooled)

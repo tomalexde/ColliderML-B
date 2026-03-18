@@ -82,7 +82,7 @@ def main(hparams):
         accelerator=hparams.accelerator,
         devices=hparams.devices,
         strategy="ddp" if hparams.devices > 1 else "auto",
-        precision="32-true",
+        precision="bf16-mixed",
         gradient_clip_val=0.5,
     )
 
