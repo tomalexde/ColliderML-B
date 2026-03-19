@@ -57,7 +57,7 @@ def DataSave(data_module, filepath):
     print(f"DataModule saved to {filepath}")
 
 
-def DataLoad(filepath):
+def DataLoad(filepath, batch_size):
     """
     Loads a PaddedDataModule from disk using pickle.
     
@@ -72,9 +72,9 @@ def DataLoad(filepath):
         The loaded datamodule, ready to pass to trainer.fit()
     """
     with open(filepath, 'rb') as f:
-        data_module = pickle.load(f)
+        X, y = pickle.load(f)
     print(f"DataModule loaded from {filepath}")
-    return data_module
+    return DataToDataModule_1d(X,y, batch_size=batch_size)
 
 class TrackDataset(Dataset):
     """Holds a list of variable-length hit tensors and their event labels."""
