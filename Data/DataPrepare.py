@@ -255,8 +255,10 @@ def prepare_it_all(events, purity_scale, maxhits, batch_size):
         purity=purity,
         max_hits=maxhits
     )
+    X=  X_ttbar + X_ggf + X_dihiggs + X_higgs_portal
+    y = np.concatenate([ids_ttbar, ids_ggf,ids_dihiggs,ids_higgs_portal])
 
-    return DataToDataModule(batch_size, X_ttbar, ids_ttbar,X_ggf, ids_ggf,X_dihiggs, ids_dihiggs,X_higgs_portal, ids_higgs_portal)
+    return X, y
 
 def create_complex_dataset(purity_array, event_list, id_list, max_hits, batch_size):
     """
