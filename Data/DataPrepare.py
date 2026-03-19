@@ -7,14 +7,15 @@ def prepare_data(
     hits_dir,
     tracks_dir,
     event_id,
-    purity_scale,
+    purity,
     max_hits
 ):
     """
-    Prepare ML dataset with track-associated hits and additional particles based on purity_scale.
+    Prepare ML dataset with track-associated hits and additional particles based on purity.
     
-    Track-associated hits are always included. Additional particles are selected based on (# of tracks) * purity_scale.
-    max_hits parameter caps the total hits per event.
+    Track-associated hits are always included. Additional particles are sampled based on
+    purity (0-1), which is the proportion of non-track unique particle IDs to include.
+    No hit is included twice.
     
     Parameters:
     -----------
@@ -26,119 +27,106 @@ def prepare_data(
         Directory path to tracks parquet data
     event_id : int or str
         Single identifier to assign to all output events
-    purity_scale : int/float
-        Multiplier for additional particles per track (e.g., 2 = 2 additional particles per track)
+    purity : float [0, 1]
+        Proportion of non-track particle IDs to randomly sample and add.
+        0.0 = only track hits, 1.0 = all non-track particles included
     max_hits : int
         Maximum hits per event.
     
     Returns:
     --------
     X_list : list of torch.Tensor
-        List of tensors, each of shape [max_hits, 3] containing [x, y, z] coordinates
+        List of tensors each of shape [n_hits, 3] containing [x, y, z] coordinates
     ids : np.ndarray
         Shape [n_valid_events] all filled with event_id parameter
     """
-    
+    assert 0.0 <= purity <= 1.0, f"purity must be between 0 and 1, got {purity}"
+
     # Convert num_events to array if needed
     if isinstance(num_events, int):
         events = np.arange(num_events, dtype=np.int32)
     else:
         events = np.asarray(list(num_events), dtype=np.int32)
-    
+
     # Load data efficiently
-    hits_df = utils_tracks.read_events_hits(hits_dir, events)
+    hits_df   = utils_tracks.read_events_hits(hits_dir, events)
     tracks_df = utils_tracks.read_events_tracks(tracks_dir, events)
-    
+
     # Pre-group for fast lookup
-    hits_by_event = {eid: group[['x', 'y', 'z', 'particle_id']].values 
-                     for eid, group in hits_df.groupby('event_id')}
-    
-    tracks_by_event = {eid: group['hit_ids'].values 
+    hits_by_event   = {eid: group[['x', 'y', 'z', 'particle_id']].values
+                       for eid, group in hits_df.groupby('event_id')}
+    tracks_by_event = {eid: group['hit_ids'].values
                        for eid, group in tracks_df.groupby('event_id')}
-    
-    # Output lists
-    X_list = []
+
+    X_list   = []
     ids_list = []
-    
-    # Process each event
+
     for event_id_val in events:
-        # Skip if event not in data
         if event_id_val not in hits_by_event:
             continue
-        
-        all_hits = hits_by_event[event_id_val]  # shape (n_hits, 4) with [x, y, z, particle_id]
+
+        all_hits             = hits_by_event[event_id_val]  # (N, 4): x, y, z, particle_id
         track_hit_ids_nested = tracks_by_event.get(event_id_val, np.array([], dtype=object))
-        
-        # Flatten and unique all track hit IDs for this event
+
+        # --- Track hits ---
         if len(track_hit_ids_nested) > 0:
             track_hit_ids = np.unique(np.concatenate(track_hit_ids_nested))
+            valid_mask    = (track_hit_ids >= 0) & (track_hit_ids < len(all_hits))
+            track_hit_ids = track_hit_ids[valid_mask]
         else:
             track_hit_ids = np.array([], dtype=np.int32)
-        
-        # Filter valid indices (within bounds, non-negative)
-        valid_mask = (track_hit_ids >= 0) & (track_hit_ids < len(all_hits))
-        track_hit_ids = track_hit_ids[valid_mask]
-        
-        # Get unique particle IDs associated with tracks
+
+        # Particle IDs associated with tracks
         if len(track_hit_ids) > 0:
-            track_pids = np.unique(all_hits[track_hit_ids, 3])
+            track_pids  = np.unique(all_hits[track_hit_ids, 3])
+            track_hits  = all_hits[track_hit_ids, :3]
         else:
-            track_pids = np.array([], dtype=all_hits.dtype[3])
-        
-        num_tracks = len(track_pids)  # Number of unique particles with tracks
-        
-        # Save all hits associated with tracks
-        if len(track_hit_ids) > 0:
-            track_hits = all_hits[track_hit_ids, :3]
-        else:
-            track_hits = np.zeros((0, 3), dtype=np.float32)
-        
-        # Determine additional particles: (# of tracks) * purity_scale
-        n_additional_particles = int(num_tracks * purity_scale)
-        
-        # Get all unique particle IDs not associated with tracks
-        all_pids = np.unique(all_hits[:, 3])
+            track_pids  = np.array([], dtype=all_hits.dtype)
+            track_hits  = np.zeros((0, 3), dtype=np.float32)
+
+        # --- Non-track particles ---
+        # All unique particle IDs in the event not associated with any track
+        all_pids       = np.unique(all_hits[:, 3])
         non_track_pids = np.setdiff1d(all_pids, track_pids)
-        
-        # Select additional particles (up to available)
-        n_additional_particles = min(n_additional_particles, len(non_track_pids))
-        if n_additional_particles > 0:
-            additional_pids = np.random.choice(non_track_pids, size=n_additional_particles, replace=False)
+
+        # Sample a proportion of non-track particle IDs
+        n_to_sample = int(len(non_track_pids) * purity)
+        if n_to_sample > 0:
+            sampled_pids = np.random.choice(non_track_pids, size=n_to_sample, replace=False)
         else:
-            additional_pids = np.array([], dtype=non_track_pids.dtype)
-        
-        # Get all hits for additional particles
-        if len(additional_pids) > 0:
-            additional_mask = np.isin(all_hits[:, 3], additional_pids)
-            additional_hits = all_hits[additional_mask, :3]
+            sampled_pids = np.array([], dtype=non_track_pids.dtype)
+
+        # Get all hits for sampled particles, excluding any already in track_hit_ids
+        if len(sampled_pids) > 0:
+            particle_mask    = np.isin(all_hits[:, 3], sampled_pids)
+            all_indices      = np.where(particle_mask)[0]
+            # Remove any indices already used as track hits
+            non_duplicate    = np.setdiff1d(all_indices, track_hit_ids)
+            additional_hits  = all_hits[non_duplicate, :3]
         else:
-            additional_hits = np.zeros((0, 3), dtype=np.float32)
-        
-        # Combine track hits and additional hits
+            additional_hits  = np.zeros((0, 3), dtype=np.float32)
+
+        # --- Combine and cap ---
         hits_data = np.vstack([track_hits, additional_hits])
-        
-        # Cap at max_hits
         hits_data = hits_data[:max_hits]
-        
+
         X_list.append(torch.tensor(hits_data, dtype=torch.float32))
         ids_list.append(event_id)
-    
-    # Convert ids to array
+
     ids = np.array(ids_list, dtype=type(event_id))
-    
     return X_list, ids
 
 def calculate_max_hits_from_purity(
     num_events,
     hits_dir,
     tracks_dir,
-    purity_scale
+    purity
 ):
     """
-    Calculate the necessary max_hits value for a given purity_scale.
+    Calculate the necessary max_hits value for a given purity.
     
     Determines what max_hits should be set to in order to achieve the desired
-    purity_scale across all events without exceeding available data.
+    purity across all events without exceeding available data.
     
     Parameters:
     -----------
@@ -148,13 +136,13 @@ def calculate_max_hits_from_purity(
         Directory path to hits parquet data
     tracks_dir : str
         Directory path to tracks parquet data
-    purity_scale : int or float
+    purity : int or float
         Desired multiplier for raw hits per track hit (e.g., 2 = 2 raw hits per track hit)
     
     Returns:
     --------
     max_hits : int
-        Recommended max_hits value to achieve the desired purity_scale
+        Recommended max_hits value to achieve the desired purity
     """
     
     # Convert num_events to array if needed
@@ -197,8 +185,8 @@ def calculate_max_hits_from_purity(
         n_track_hits = len(track_hit_ids)
         n_raw_available = len(all_hits) - n_track_hits
         
-        # Calculate hits needed: track hits + (track hits * purity_scale)
-        n_raw_to_add = int(n_track_hits * purity_scale)
+        # Calculate hits needed: track hits + (track hits * purity)
+        n_raw_to_add = int(n_track_hits * purity)
         n_raw_to_add = min(n_raw_to_add, n_raw_available)
         
         event_max_hits = n_track_hits + n_raw_to_add
@@ -212,6 +200,7 @@ def calculate_max_hits_from_purity(
 
 
 def prepare_it_all(events, purity_scale, maxhits, batch_size):
+    purity = purity_scale
     '''
     Prepare data for all four datasets
     '''
@@ -223,7 +212,7 @@ def prepare_it_all(events, purity_scale, maxhits, batch_size):
         hits_dir=filepath.ttbar_base_hits_dir,
         tracks_dir=filepath.ttbar_base_tracks_dir,
         event_id=0,  # Label all ttbar events as 0
-        purity_scale=purity_scale,
+        purity=purity,
         max_hits=maxhits
     )
     #speed numbers
@@ -244,7 +233,7 @@ def prepare_it_all(events, purity_scale, maxhits, batch_size):
         hits_dir=filepath.ggf_base_hits_dir,
         tracks_dir=filepath.ggf_base_tracks_dir,
         event_id=1,  # Label all ttbar events as 1
-        purity_scale=purity_scale,
+        purity=purity,
         max_hits=maxhits
     )
 
@@ -254,7 +243,7 @@ def prepare_it_all(events, purity_scale, maxhits, batch_size):
         hits_dir=filepath.dihiggs_base_hits_dir,
         tracks_dir=filepath.dihiggs_base_tracks_dir,
         event_id=2,  # Label all ttbar events as 2
-        purity_scale=purity_scale,
+        purity=purity,
         max_hits=maxhits
     )
 
@@ -263,7 +252,7 @@ def prepare_it_all(events, purity_scale, maxhits, batch_size):
         hits_dir=filepath.higgs_portal_base_hits_dir,
         tracks_dir=filepath.higgs_portal_base_tracks_dir,
         event_id=3,  # Label all ttbar events as 3
-        purity_scale=purity_scale,
+        purity=purity,
         max_hits=maxhits
     )
 
@@ -276,7 +265,7 @@ def create_complex_dataset(purity_array, event_list, id_list, max_hits, batch_si
     Parameters:
     -----------
     purity_array : list
-        List of purity_scale values for each dataset entry
+        List of purity values for each dataset entry
     event_list : list of range/array-like
         List of event ranges for each dataset entry
     id_list : list of int
@@ -309,14 +298,14 @@ def create_complex_dataset(purity_array, event_list, id_list, max_hits, batch_si
         hits_dir, tracks_dir = dir_map[event_id]
         
         print(f"Loading {process_names[event_id]} | events: {list(events)[0]}–{list(events)[-1]} "
-              f"| purity_scale: {purity}")
+              f"| purity: {purity}")
         
         X_list, ids = prepare_data(
             num_events   = events,
             hits_dir     = hits_dir,
             tracks_dir   = tracks_dir,
             event_id     = event_id,
-            purity_scale = purity,
+            purity = purity,
             max_hits     = max_hits,
         )
         
