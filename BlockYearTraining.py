@@ -3,8 +3,7 @@ matplotlib.use('Agg')  # Headless — must come before pyplot on SLURM
 
 from common_imports import *
 from argparse import ArgumentParser
-from Transformer.NeuralNetwork_SDPA import LightningNeuralNetwork as LightningNeuralNetwork_SDPA
-from Transformer.NeuralNetwork_Flash import LightningNeuralNetwork as LightningNeuralNetwork_Flash
+from Transformer.NeuralNetwork_Flash import LightningNeuralNetwork
 from Data.DataPrepare import prepare_it_all
 import gc
 import os
@@ -15,6 +14,8 @@ from Data.DataModule import DataLoad
 
 CURRICULUM = {
     'block_purity': [0, 25, 50, 75, 100],
+    'batch_size': [128, 64, 64, 32, 16],
+    'epochs': [50, 20, 15, 10 , 7],
     'year_pileup':  [0, 0, 0, 0],   # placeholder — all zeros until pileup is implemented
 }
 
@@ -68,69 +69,65 @@ def plot_curriculum_summary(csv_path: str):
     plt.close()
     print(f"Summary plot saved → {os.path.abspath('curriculum_summary.png')}")
 
-def InitialiseModel(mode, 
-                feature_dim,
-                hidden_size,
-                num_heads,
-                num_encoder_layers,
-                output_size,
-                learning_rate,):
-    if mode == "sdpa":
-        model = LightningNeuralNetwork_SDPA(
-            feature_dim=feature_dim,
-            hidden_size=hidden_size,
-            num_heads=num_heads,
-            num_encoder_layers=num_encoder_layers,
-            output_size=output_size,
-            learning_rate=learning_rate
-        )
-        return model
-    model = LightningNeuralNetwork_Flash(
-        feature_dim=feature_dim,
-        hidden_size=hidden_size,
-        num_heads=num_heads,
-        num_encoder_layers=num_encoder_layers,
-        output_size=output_size,
-        learning_rate=learning_rate
-    )
-    return model
-
-def LoadModel(mode,prev_path):
-    if mode == "sdpa":
-        model = LightningNeuralNetwork_SDPA.load_from_checkpoint(prev_path)
-        return model
-    model = LightningNeuralNetwork_Flash.load_from_checkpoint(prev_path)
-    return model
 
 def main(hparams):
+    # Strip SLURM vars so Lightning uses multiprocessing.spawn (needed for JupyterHub)
+    import socket
+    os.environ.pop("SLURM_NTASKS",    None)
+    os.environ.pop("SLURM_JOB_NAME", None)
+    def _free_port():
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('', 0))
+            return s.getsockname()[1]
+    os.environ["MASTER_PORT"] = str(_free_port())
+
     all_metrics = []
     csv_path    = 'blockyear_results.csv'
 
     block_purity = CURRICULUM['block_purity'][:hparams.blocks]
     pileup       = CURRICULUM['year_pileup'][0]
+    batch_size   = CURRICULUM['batch_size'][:hparams.blocks]
+    epochs       = CURRICULUM['epochs'][:hparams.blocks]
     year         = 0
 
     for block in range(1, hparams.blocks + 1):
         purity   = block_purity[block - 1]
+        batchsize = batch_size[block - 1]
+        maxepochs = epochs[block - 1]
         run_name = f"Y{year}_B{block}_purity{purity}_pileup{pileup}"
         print(f"\n  -- Block {block}: purity_scale={purity} --")
 
         # Data
         if hparams.data_dir is not None:
-            data_module = DataLoad(f"{hparams.data_dir}/P{purity}_cleaned", hparams.batch_size, mode=hparams.mode)
+            data_module = DataLoad(f"{hparams.data_dir}/P{purity}",batchsize, mode = "flash")
         else:
-            data_module = prepare_it_all(
+            from Data.DataModule import PackedDataModule
+            _dm = prepare_it_all(
                 events       = hparams.num_events,
                 purity_scale = purity,
                 maxhits      = hparams.max_hits,
-                batch_size   = hparams.batch_size,
+                batch_size   = batchsize,
             )
-            data_module.setup()
+            # prepare_it_all returns PaddedDataModule — swap to PackedDataModule for flash
+            data_module = PackedDataModule(
+                _dm.X_train, _dm.y_train,
+                _dm.X_val,   _dm.y_val,
+                _dm.X_test,  _dm.y_test,
+                batch_size   = batchsize,
+            )
+        data_module.setup()
 
         # Model
         if block == 1:
             print("  Initialising fresh model.")
-            model = InitialiseModel(hparams.mode,3,hparams.hidden_size,hparams.nhead,hparams.layers,4,hparams.lr)
+            model = LightningNeuralNetwork(
+                feature_dim        = 3,
+                hidden_size        = hparams.hidden_size,
+                num_heads          = hparams.nhead,
+                num_encoder_layers = hparams.layers,
+                output_size        = 4,
+                learning_rate      = hparams.lr,
+            )
         else:
             prev_path  = last_ckpt_path(year, block - 1)
             prev_label = f"Year {year} / Block {block-1}"
@@ -140,7 +137,7 @@ def main(hparams):
                     f"Expected last.ckpt from {prev_label}"
                 )
             print(f"  Resuming from {prev_label}: {prev_path}")
-            model = LoadModel(hparams.mode,prev_path)
+            model = LightningNeuralNetwork.load_from_checkpoint(prev_path)
             model.learning_rate = hparams.lr
 
         # W&B
@@ -156,14 +153,15 @@ def main(hparams):
                 'num_layers': hparams.layers,
                 'lr': hparams.lr,
             },
-            reinit  = True,
+            #reinit  = True,
+            reinit='finish_previous',
         )
 
         # Callbacks
         ckpt_callback = ModelCheckpoint(
             monitor    = 'val_auc',
             dirpath    = checkpoint_dir(year, block),
-            filename   = f'TrackT-Y{year}B{block}' + '-{epoch:02d}-{val_auc:.4f}',
+            filename   = f'TrackT-Baseline-Y{year}B{block}' + '-{epoch:02d}-{val_auc:.4f}',
             save_top_k = 1,
             mode       = 'max',
             save_last  = True,
@@ -178,12 +176,12 @@ def main(hparams):
 
         # Trainer
         trainer = pl.Trainer(
-            max_epochs        = hparams.max_epochs,
+            max_epochs        = maxepochs,
             logger            = wandb_logger,
             callbacks         = [early_stop, ckpt_callback],
             accelerator       = hparams.accelerator,
             devices           = hparams.devices,
-            strategy          = "ddp" if hparams.devices > 1 else "auto",
+            strategy          = "ddp_notebook" if hparams.devices > 1 else "auto",
             precision         = '32-true',
             gradient_clip_val = 0.5,
         )
@@ -191,7 +189,7 @@ def main(hparams):
         trainer.fit(model, data_module)
 
         # Test
-        best_model   = LoadModel(hparams.mode,
+        best_model   = LightningNeuralNetwork.load_from_checkpoint(
             ckpt_callback.best_model_path
         )
         test_results = trainer.test(best_model, data_module)
@@ -206,6 +204,10 @@ def main(hparams):
             })
 
             plot_confusion_matrix(best_model.final_cm, year, block)
+            if best_model.final_cm is not None:
+                wandb_logger.experiment.log({
+                    'confusion_matrix': wandb.Image(f'confusion_matrix_Y{year}B{block}.png')
+                })
 
             row = {
                 'year':         year,
@@ -236,9 +238,7 @@ if __name__ == '__main__':
     # Execution
     parser.add_argument('--accelerator',    default='gpu')
     parser.add_argument('--devices',        type=int,   default=4)
-    parser.add_argument('--max_epochs',     type=int,   default=500)
     parser.add_argument('--batch_size',     type=int,   default=128)
-    parser.add_argument("--mode",   type=str,  default="flash")
 
     # Physics / Data
     parser.add_argument('--data_dir',       type=str,   default=None)
@@ -246,11 +246,11 @@ if __name__ == '__main__':
     parser.add_argument('--max_hits',       type=int,   default=17000)
 
     # Model
-    parser.add_argument('--hidden_size',    type=int,   default=512)
-    parser.add_argument('--nhead',          type=int,   default=16)
+    parser.add_argument('--hidden_size',    type=int,   default=256)
+    parser.add_argument('--nhead',          type=int,   default=8)
     parser.add_argument('--layers',         type=int,   default=6)
     parser.add_argument('--lr',             type=float, default=1e-4)
-    parser.add_argument('--patience',       type=int,   default=50)
+    parser.add_argument('--patience',       type=int,   default=25)
 
     # Curriculum
     parser.add_argument('--years',          type=int,   default=0)
@@ -258,7 +258,7 @@ if __name__ == '__main__':
 
     # W&B
     parser.add_argument('--wandb_project',  default='ColliderML-GroupB')
-    parser.add_argument('--run_tag',        default='BYF')
+    parser.add_argument('--run_tag',        default='BYF_test')
 
     args = parser.parse_args()
     main(args)

@@ -49,10 +49,11 @@ class LightningNeuralNetwork(pl.LightningModule):
         labels = torch.cat(self._val_labels, dim=0)
         all_p  = self.all_gather(preds).view(-1, preds.shape[-1])
         all_l  = self.all_gather(labels).view(-1)
-        if self.trainer.is_global_zero:
-            auc = roc_auc_score(all_l.cpu().numpy(), all_p.cpu().numpy(),
-                                multi_class='ovr', labels=self.all_possible_labels)
-            self.log('val_auc', auc, rank_zero_only=True)
+        # All ranks compute and log — same value on every rank after all_gather.
+        # No rank_zero_only so EarlyStopping can read val_auc on all ranks.
+        auc = roc_auc_score(all_l.cpu().numpy(), all_p.cpu().numpy(),
+                            multi_class='ovr', labels=self.all_possible_labels)
+        self.log('val_auc', auc, sync_dist=False, logger=True, prog_bar=True)
         self._val_preds, self._val_labels = [], []
 
     def on_test_epoch_start(self):
@@ -74,10 +75,9 @@ class LightningNeuralNetwork(pl.LightningModule):
         labels = torch.cat(self._test_labels, dim=0)
         all_p  = self.all_gather(preds).view(-1, preds.shape[-1])
         all_l  = self.all_gather(labels).view(-1)
-        if self.trainer.is_global_zero:
-            auc = roc_auc_score(all_l.cpu().numpy(), all_p.cpu().numpy(),
-                                multi_class='ovr', labels=self.all_possible_labels)
-            self.log('test_auc', auc, rank_zero_only=True)
+        auc = roc_auc_score(all_l.cpu().numpy(), all_p.cpu().numpy(),
+                            multi_class='ovr', labels=self.all_possible_labels)
+        self.log('test_auc', auc, sync_dist=False)
         self._test_preds, self._test_labels = [], []
         self.final_cm = self.conf_matrix.compute().cpu().numpy()
 

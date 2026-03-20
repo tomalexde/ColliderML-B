@@ -13,9 +13,19 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
 torch.set_float32_matmul_precision('high')
+torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
 
 
 def main(hparams):
+    # Strip SLURM vars so Lightning uses multiprocessing.spawn (needed for JupyterHub)
+    import socket
+    os.environ.pop("SLURM_NTASKS",    None)
+    os.environ.pop("SLURM_JOB_NAME", None)
+    def _free_port():
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('', 0))
+            return s.getsockname()[1]
+    os.environ["MASTER_PORT"] = str(_free_port())
     # -------------------------------------------------------------------------
     # Data — mutually exclusive modes, checked in priority order:
     #   1. --data_file: load pre-saved DataModule from disk
@@ -38,12 +48,22 @@ def main(hparams):
     else:
         if hparams.num_events == 0:
             hparams.num_events = hparams.num_events_list
-        data_module = prepare_it_all(
+        from Data.DataModule import PackedDataModule
+        _dm = prepare_it_all(
             events=hparams.num_events,
             purity_scale=hparams.purity,
             maxhits=hparams.max_hits,
             batch_size=hparams.batch_size
         )
+        if hparams.mode == 'flash':
+            data_module = PackedDataModule(
+                _dm.X_train, _dm.y_train,
+                _dm.X_val,   _dm.y_val,
+                _dm.X_test,  _dm.y_test,
+                batch_size=hparams.batch_size,
+            )
+        else:
+            data_module = _dm
 
     # -------------------------------------------------------------------------
     # W&B — API key via env var (export WANDB_API_KEY=...) or `wandb login`
@@ -78,7 +98,8 @@ def main(hparams):
         callbacks=[early_stopping, checkpoint_callback],
         accelerator=hparams.accelerator,
         devices=hparams.devices,
-        strategy="ddp" if hparams.devices > 1 else "auto",
+        strategy="ddp_notebook" if hparams.devices > 1 else "auto",
+        log_every_n_steps=1,
         precision="32-true",
         gradient_clip_val=0.5,
     )
@@ -105,9 +126,8 @@ def main(hparams):
     trainer.fit(model, data_module)
 
     # Test on best checkpoint
-    best_model = LightningNeuralNetwork.load_from_checkpoint(
-        checkpoint_callback.best_model_path
-    )
+    NN = LightningNeuralNetwork_Flash if hparams.mode == 'flash' else LightningNeuralNetwork_SDPA
+    best_model = NN.load_from_checkpoint(checkpoint_callback.best_model_path)
     test_results = trainer.test(best_model, data_module)
 
     # Post-test: W&B logging, confusion matrix — rank 0 only to avoid
@@ -187,7 +207,7 @@ if __name__ == "__main__":
 
     # W&B
     parser.add_argument("--wandb_project", default="ColliderML-GroupB")
-    parser.add_argument("--run_name",      default=None)
+    parser.add_argument("--run_name",      default="Baselinep0-test")
 
     args = parser.parse_args()
     main(args)
