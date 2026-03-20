@@ -48,10 +48,9 @@ class LightningNeuralNetwork(pl.LightningModule):
         labels = torch.cat(self._val_labels, dim=0)
         all_p  = self.all_gather(preds).view(-1, preds.shape[-1])
         all_l  = self.all_gather(labels).view(-1)
-        if self.trainer.is_global_zero:
-            auc = roc_auc_score(all_l.cpu().numpy(), all_p.cpu().numpy(),
-                                multi_class='ovr', labels=self.all_possible_labels)
-            self.log('val_auc', auc, rank_zero_only=True)
+        auc = roc_auc_score(all_l.cpu().numpy(), all_p.cpu().numpy(),
+                            multi_class='ovr', labels=self.all_possible_labels)
+        self.log('val_auc', auc, sync_dist=False)
         self._val_preds, self._val_labels = [], []
 
     def on_test_epoch_start(self):
@@ -73,13 +72,12 @@ class LightningNeuralNetwork(pl.LightningModule):
         labels = torch.cat(self._test_labels, dim=0)
         all_p  = self.all_gather(preds).view(-1, preds.shape[-1])
         all_l  = self.all_gather(labels).view(-1)
-        if self.trainer.is_global_zero:
-            auc = roc_auc_score(all_l.cpu().numpy(), all_p.cpu().numpy(),
-                                multi_class='ovr', labels=self.all_possible_labels)
-            self.log('test_auc', auc, rank_zero_only=True)
+        auc = roc_auc_score(all_l.cpu().numpy(), all_p.cpu().numpy(),
+                            multi_class='ovr', labels=self.all_possible_labels)
+        self.log('test_auc', auc, sync_dist=False)
         self._test_preds, self._test_labels = [], []
         self.final_cm = self.conf_matrix.compute().cpu().numpy()
 
     def configure_optimizers(self):
-        optimizer   = torch.optim.AdamW(self.parameters(), lr=self.learning_rate, weight_decay=0.01)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.learning_rate, weight_decay=0.01)
         return {"optimizer": optimizer}

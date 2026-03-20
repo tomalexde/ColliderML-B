@@ -1,15 +1,4 @@
 from common_imports import *
-ttbar_base_hits_dir = "/global/cfs/cdirs/m4958/data/ColliderML/simulation/hard_scatter/ttbar/v1/parquet/reco/tracker_hits"
-ttbar_base_tracks_dir = "/global/cfs/cdirs/m4958/data/ColliderML/simulation/hard_scatter/ttbar/v1/parquet/reco/tracks"
-
-dihiggs_base_hits_dir = "/global/cfs/cdirs/m4958/data/ColliderML/simulation/hard_scatter/dihiggs/v1/parquet/reco/tracker_hits"
-dihiggs_base_tracks_dir = "/global/cfs/cdirs/m4958/data/ColliderML/simulation/hard_scatter/dihiggs/v1/parquet/reco/tracks"
-
-higgs_portal_base_hits_dir = "/global/cfs/cdirs/m4958/data/ColliderML/simulation/hard_scatter/higgs_portal/v1/parquet/reco/tracker_hits"
-higgs_portal_base_tracks_dir = "/global/cfs/cdirs/m4958/data/ColliderML/simulation/hard_scatter/higgs_portal/v1/parquet/reco/tracks"
-
-ggf_base_hits_dir = "/global/cfs/cdirs/m4958/data/ColliderML/simulation/hard_scatter/ggf/v1/parquet/reco/tracker_hits"
-ggf_base_tracks_dir = "/global/cfs/cdirs/m4958/data/ColliderML/simulation/hard_scatter/ggf/v1/parquet/reco/tracks"
 
 def prepare_data(
     num_events,
@@ -60,8 +49,8 @@ def prepare_data(
         events = np.asarray(list(num_events), dtype=np.int32)
     
     # Load data efficiently
-    hits_df = utils.read_events_hits(hits_dir, events)
-    tracks_df = utils.read_events_tracks(tracks_dir, events)
+    hits_df = utils_new.read_events_hits(hits_dir, events)
+    tracks_df = utils_new.read_events_tracks(tracks_dir, events)
     
     # Pre-group for fast lookup
     hits_by_event = {eid: group[['x', 'y', 'z']].values 
@@ -198,8 +187,8 @@ def calculate_max_hits_from_purity(
         events = np.asarray(list(num_events), dtype=np.int32)
     
     # Load data efficiently
-    hits_df = utils.read_events_hits(hits_dir, events)
-    tracks_df = utils.read_events_tracks(tracks_dir, events)
+    hits_df = utils_new.read_events_hits(hits_dir, events)
+    tracks_df = utils_new.read_events_tracks(tracks_dir, events)
     
     # Pre-group for fast lookup
     hits_by_event = {eid: group[['x', 'y', 'z']].values 

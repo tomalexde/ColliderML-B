@@ -1,5 +1,7 @@
 import matplotlib
 matplotlib.use('Agg')  # Headless — must come before pyplot on SLURM
+import torch.multiprocessing as mp
+mp.set_start_method('fork', force=True)
 
 from common_imports import *
 from argparse import ArgumentParser
@@ -11,6 +13,9 @@ import wandb
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from Data.DataModule import DataLoad
+
+torch.set_float32_matmul_precision('high')
+torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
 
 CURRICULUM = {
     'block_purity': [0, 25, 50, 75, 100],
@@ -70,16 +75,29 @@ def plot_curriculum_summary(csv_path: str):
     print(f"Summary plot saved → {os.path.abspath('curriculum_summary.png')}")
 
 
-def main(hparams):
-    # Strip SLURM vars so Lightning uses multiprocessing.spawn (needed for JupyterHub)
+
+def get_strategy(devices: int) -> str:
+    """Use ddp_notebook in JupyterHub, ddp in sbatch — detected automatically."""
+    if devices <= 1:
+        return "auto"
+    if os.environ.get("JUPYTERHUB_USER"):
+        return "ddp_notebook"
+    return "ddp"
+
+
+def _setup_distributed_env():
+    """Strip SLURM vars and find a free port — only needed in JupyterHub."""
+    if not os.environ.get("JUPYTERHUB_USER"):
+        return   # sbatch handles this itself
     import socket
     os.environ.pop("SLURM_NTASKS",    None)
     os.environ.pop("SLURM_JOB_NAME", None)
-    def _free_port():
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(('', 0))
-            return s.getsockname()[1]
-    os.environ["MASTER_PORT"] = str(_free_port())
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        os.environ["MASTER_PORT"] = str(s.getsockname()[1])
+
+def main(hparams):
+    _setup_distributed_env()
 
     all_metrics = []
     csv_path    = 'blockyear_results.csv'
@@ -99,7 +117,7 @@ def main(hparams):
 
         # Data
         if hparams.data_dir is not None:
-            data_module = DataLoad(f"{hparams.data_dir}/P{purity}",batchsize, mode = "flash")
+            data_module = DataLoad(f"{hparams.data_dir}/P{purity}_cleaned",batchsize, mode = "flash")
         else:
             from Data.DataModule import PackedDataModule
             _dm = prepare_it_all(
@@ -181,8 +199,9 @@ def main(hparams):
             callbacks         = [early_stop, ckpt_callback],
             accelerator       = hparams.accelerator,
             devices           = hparams.devices,
-            strategy          = "ddp_notebook" if hparams.devices > 1 else "auto",
+            strategy          = get_strategy(hparams.devices),
             precision         = '32-true',
+            log_every_n_steps = 1,
             gradient_clip_val = 0.5,
         )
 
@@ -258,7 +277,7 @@ if __name__ == '__main__':
 
     # W&B
     parser.add_argument('--wandb_project',  default='ColliderML-GroupB')
-    parser.add_argument('--run_tag',        default='BYF_test')
+    parser.add_argument('--run_tag',        default='BYF')
 
     args = parser.parse_args()
     main(args)

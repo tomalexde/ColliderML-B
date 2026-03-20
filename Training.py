@@ -1,5 +1,7 @@
 import matplotlib
 matplotlib.use('Agg')  # Headless — must come before pyplot on SLURM
+import torch.multiprocessing as mp
+mp.set_start_method('fork', force=True)
 
 from common_imports import *
 from argparse import ArgumentParser
@@ -16,16 +18,40 @@ torch.set_float32_matmul_precision('high')
 torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
 
 
-def main(hparams):
-    # Strip SLURM vars so Lightning uses multiprocessing.spawn (needed for JupyterHub)
+
+def get_strategy(devices: int) -> str:
+    """Use ddp_notebook in JupyterHub, ddp in sbatch — detected automatically."""
+    if devices <= 1:
+        return "auto"
+    if os.environ.get("JUPYTERHUB_USER"):
+        return "ddp_notebook"
+    return "ddp"
+
+
+def _setup_distributed_env():
+    """Strip SLURM vars and find a free port — only needed in JupyterHub."""
+    if not os.environ.get("JUPYTERHUB_USER"):
+        return   # sbatch handles this itself
     import socket
     os.environ.pop("SLURM_NTASKS",    None)
     os.environ.pop("SLURM_JOB_NAME", None)
-    def _free_port():
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(('', 0))
-            return s.getsockname()[1]
-    os.environ["MASTER_PORT"] = str(_free_port())
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        os.environ["MASTER_PORT"] = str(s.getsockname()[1])
+
+def main(hparams):
+    _setup_distributed_env()
+    
+    #import socket
+    #if not hparams.slurm:
+    #    os.environ.pop("SLURM_NTASKS", None)
+    #    os.environ.pop("SLURM_JOB_NAME", None)
+    #    os.environ["MASTER_ADDR"] = "localhost"
+    #    def _free_port():
+    #        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    #            s.bind(('', 0))
+    #            return s.getsockname()[1]
+    #    os.environ["MASTER_PORT"] = str(_free_port())
     # -------------------------------------------------------------------------
     # Data — mutually exclusive modes, checked in priority order:
     #   1. --data_file: load pre-saved DataModule from disk
@@ -98,7 +124,7 @@ def main(hparams):
         callbacks=[early_stopping, checkpoint_callback],
         accelerator=hparams.accelerator,
         devices=hparams.devices,
-        strategy="ddp_notebook" if hparams.devices > 1 else "auto",
+        strategy=get_strategy(hparams.devices),
         log_every_n_steps=1,
         precision="32-true",
         gradient_clip_val=0.5,
@@ -171,7 +197,7 @@ if __name__ == "__main__":
 
     # Execution
     parser.add_argument("--accelerator",  default="gpu")
-    parser.add_argument("--devices",      type=int,  default=1)
+    parser.add_argument("--devices",      type=int,  default=4)
     parser.add_argument("--max_epochs",   type=int,  default=500)
     parser.add_argument("--batch_size",   type=int,  default=128)
     parser.add_argument("--mode",   type=str,  default="flash")
@@ -203,11 +229,13 @@ if __name__ == "__main__":
     parser.add_argument("--nhead",        type=int,   default=8)
     parser.add_argument("--layers",       type=int,   default=6)
     parser.add_argument("--lr",           type=float, default=1e-4)
-    parser.add_argument("--patience",     type=int,   default=50)
+    parser.add_argument("--patience",     type=int,   default=25)
 
     # W&B
     parser.add_argument("--wandb_project", default="ColliderML-GroupB")
-    parser.add_argument("--run_name",      default="Baselinep0-test")
+    parser.add_argument("--run_name",      default=None)
+
+    #parser.add_argument('--slurm', action='store_true', default=False)
 
     args = parser.parse_args()
     main(args)
