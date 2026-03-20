@@ -3,8 +3,9 @@ matplotlib.use('Agg')  # Headless — must come before pyplot on SLURM
 
 from common_imports import *
 from argparse import ArgumentParser
-from Transformer.NeuralNetwork import LightningNeuralNetwork
-from Data.DataPrepare import prepare_it_all, create_complex_dataset, prepare_tracks_only
+from Transformer.NeuralNetwork_Flash import LightningNeuralNetwork as LightningNeuralNetwork_Flash
+from Transformer.NeuralNetwork_SDPA import LightningNeuralNetwork as LightningNeuralNetwork_SDPA
+from Data.DataPrepare import prepare_it_all, create_complex_dataset
 from Data.DataModule import DataLoad
 import os
 import wandb
@@ -28,16 +29,12 @@ def main(hparams):
     # -------------------------------------------------------------------------
     print("Preparing physics data...")
     if hparams.data_file is not None:
-        data_module = DataLoad(hparams.data_file)
+        data_module = DataLoad(hparams.data_file, hparams.batch_size, hparams.mode)
     elif hparams.isComplex:
         data_module = create_complex_dataset(
             hparams.purity_c, hparams.events_list_c,
             hparams.id_c, hparams.max_hits, hparams.batch_size
         )
-    elif hparams.isTracks:
-        if hparams.num_events_t == 0:
-            hparams.num_events_t = hparams.num_events_list_t
-        data_module = prepare_tracks_only(hparams.num_events_t, hparams.batch_size)
     else:
         if hparams.num_events == 0:
             hparams.num_events = hparams.num_events_list
@@ -69,8 +66,8 @@ def main(hparams):
 
     checkpoint_callback = ModelCheckpoint(
         monitor='val_auc',
-        dirpath='checkpoints/',
-        filename='TrackT-{epoch:02d}-{val_loss:.4f}-{val_auc:.4f}',
+        dirpath='checkpoints/p0/',
+        filename='TrackT-Baseline-{epoch:02d}-{val_loss:.4f}-{val_auc:.4f}',
         save_top_k=1,
         mode='max'
     )
@@ -82,18 +79,28 @@ def main(hparams):
         accelerator=hparams.accelerator,
         devices=hparams.devices,
         strategy="ddp" if hparams.devices > 1 else "auto",
-        precision="bf16-mixed",
+        precision="32-true",
         gradient_clip_val=0.5,
     )
 
-    model = LightningNeuralNetwork(
-        feature_dim=3,
-        hidden_size=hparams.hidden_size,
-        num_heads=hparams.nhead,
-        num_encoder_layers=hparams.layers,
-        output_size=4,
-        learning_rate=hparams.lr
-    )
+    if hparams.mode == "sdpa":
+        model = LightningNeuralNetwork_SDPA(
+            feature_dim=3,
+            hidden_size=hparams.hidden_size,
+            num_heads=hparams.nhead,
+            num_encoder_layers=hparams.layers,
+            output_size=4,
+            learning_rate=hparams.lr
+        )
+    else:
+        model = LightningNeuralNetwork_Flash(
+            feature_dim=3,
+            hidden_size=hparams.hidden_size,
+            num_heads=hparams.nhead,
+            num_encoder_layers=hparams.layers,
+            output_size=4,
+            learning_rate=hparams.lr
+        )
     print("Starting training on TrackT...")
     trainer.fit(model, data_module)
 
@@ -147,7 +154,8 @@ if __name__ == "__main__":
     parser.add_argument("--devices",      type=int,  default=1)
     parser.add_argument("--max_epochs",   type=int,  default=500)
     parser.add_argument("--batch_size",   type=int,  default=128)
-
+    parser.add_argument("--mode",   type=str,  default="flash")
+    
     # Data mode flags — use store_true, NOT type=bool (argparse bool bug)
     parser.add_argument("--isComplex",    action="store_true",
                         help="Use create_complex_dataset")
@@ -173,7 +181,7 @@ if __name__ == "__main__":
     # Model
     parser.add_argument("--hidden_size",  type=int,   default=256)
     parser.add_argument("--nhead",        type=int,   default=8)
-    parser.add_argument("--layers",       type=int,   default=16)
+    parser.add_argument("--layers",       type=int,   default=6)
     parser.add_argument("--lr",           type=float, default=1e-4)
     parser.add_argument("--patience",     type=int,   default=50)
 

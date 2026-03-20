@@ -3,7 +3,8 @@ matplotlib.use('Agg')  # Headless — must come before pyplot on SLURM
 
 from common_imports import *
 from argparse import ArgumentParser
-from Transformer.NeuralNetwork import LightningNeuralNetwork
+from Transformer.NeuralNetwork_SDPA import LightningNeuralNetwork as LightningNeuralNetwork_SDPA
+from Transformer.NeuralNetwork_Flash import LightningNeuralNetwork as LightningNeuralNetwork_Flash
 from Data.DataPrepare import prepare_it_all
 import gc
 import os
@@ -13,7 +14,7 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from Data.DataModule import DataLoad
 
 CURRICULUM = {
-    'block_purity': [0, 1, 5, 10, 100],
+    'block_purity': [0, 25, 50, 75, 100],
     'year_pileup':  [0, 0, 0, 0],   # placeholder — all zeros until pileup is implemented
 }
 
@@ -67,6 +68,39 @@ def plot_curriculum_summary(csv_path: str):
     plt.close()
     print(f"Summary plot saved → {os.path.abspath('curriculum_summary.png')}")
 
+def InitialiseModel(mode, 
+                feature_dim,
+                hidden_size,
+                num_heads,
+                num_encoder_layers,
+                output_size,
+                learning_rate,):
+    if mode == "sdpa":
+        model = LightningNeuralNetwork_SDPA(
+            feature_dim=feature_dim,
+            hidden_size=hidden_size,
+            num_heads=num_heads,
+            num_encoder_layers=num_encoder_layers,
+            output_size=output_size,
+            learning_rate=learning_rate
+        )
+        return model
+    model = LightningNeuralNetwork_Flash(
+        feature_dim=feature_dim,
+        hidden_size=hidden_size,
+        num_heads=num_heads,
+        num_encoder_layers=num_encoder_layers,
+        output_size=output_size,
+        learning_rate=learning_rate
+    )
+    return model
+
+def LoadModel(mode,prev_path):
+    if mode == "sdpa":
+        model = LightningNeuralNetwork_SDPA.load_from_checkpoint(prev_path)
+        return model
+    model = LightningNeuralNetwork_Flash.load_from_checkpoint(prev_path)
+    return model
 
 def main(hparams):
     all_metrics = []
@@ -83,7 +117,7 @@ def main(hparams):
 
         # Data
         if hparams.data_dir is not None:
-            data_module = DataLoad(f"{hparams.data_dir}/P{purity}")
+            data_module = DataLoad(f"{hparams.data_dir}/P{purity}", hparams.batch_size, mode=hparams.mode)
         else:
             data_module = prepare_it_all(
                 events       = hparams.num_events,
@@ -96,14 +130,7 @@ def main(hparams):
         # Model
         if block == 1:
             print("  Initialising fresh model.")
-            model = LightningNeuralNetwork(
-                feature_dim        = 3,
-                hidden_size        = hparams.hidden_size,
-                num_heads          = hparams.nhead,
-                num_encoder_layers = hparams.layers,
-                output_size        = 4,
-                learning_rate      = hparams.lr,
-            )
+            model = InitialiseModel(hparams.mode,3,hparams.hidden_size,hparams.nhead,hparams.layers,4,hparams.lr)
         else:
             prev_path  = last_ckpt_path(year, block - 1)
             prev_label = f"Year {year} / Block {block-1}"
@@ -113,7 +140,7 @@ def main(hparams):
                     f"Expected last.ckpt from {prev_label}"
                 )
             print(f"  Resuming from {prev_label}: {prev_path}")
-            model = LightningNeuralNetwork.load_from_checkpoint(prev_path)
+            model = LoadModel(hparams.mode,prev_path)
             model.learning_rate = hparams.lr
 
         # W&B
@@ -164,7 +191,7 @@ def main(hparams):
         trainer.fit(model, data_module)
 
         # Test
-        best_model   = LightningNeuralNetwork.load_from_checkpoint(
+        best_model   = LoadModel(hparams.mode,
             ckpt_callback.best_model_path
         )
         test_results = trainer.test(best_model, data_module)
@@ -211,6 +238,7 @@ if __name__ == '__main__':
     parser.add_argument('--devices',        type=int,   default=4)
     parser.add_argument('--max_epochs',     type=int,   default=500)
     parser.add_argument('--batch_size',     type=int,   default=128)
+    parser.add_argument("--mode",   type=str,  default="flash")
 
     # Physics / Data
     parser.add_argument('--data_dir',       type=str,   default=None)
