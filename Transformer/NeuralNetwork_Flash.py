@@ -29,7 +29,7 @@ class LightningNeuralNetwork(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         x, cu, ms, y = self._unpack(batch)
         loss = self.loss_function(self(x, cu, ms), y)
-        self.log('train_loss', loss)
+        self.log('train_loss', loss, batch_size=y.shape[0])
         return loss
 
     def on_validation_epoch_start(self):
@@ -41,7 +41,7 @@ class LightningNeuralNetwork(pl.LightningModule):
         loss  = self.loss_function(y_hat, y)
         self._val_preds.append(torch.softmax(y_hat, dim=1).detach())
         self._val_labels.append(y.detach())
-        self.log('val_loss', loss, sync_dist=True)
+        self.log('val_loss', loss, sync_dist=True, batch_size=y.shape[0])
         return loss
 
     def on_validation_epoch_end(self):
@@ -65,7 +65,7 @@ class LightningNeuralNetwork(pl.LightningModule):
         loss  = self.loss_function(y_hat, y)
         self._test_preds.append(torch.softmax(y_hat, dim=1).detach())
         self._test_labels.append(y.detach())
-        self.log('test_loss', loss, sync_dist=True)
+        self.log('test_loss', loss, sync_dist=True, batch_size=y.shape[0])
         self.conf_matrix.update(y_hat, y)
         return loss
 

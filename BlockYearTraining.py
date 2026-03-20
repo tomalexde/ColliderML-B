@@ -117,7 +117,7 @@ def main(hparams):
 
         # Data
         if hparams.data_dir is not None:
-            data_module = DataLoad(f"{hparams.data_dir}/P{purity}", hparams.batch_size, mode=hparams.mode)
+            data_module = DataLoad(f"{hparams.data_dir}/P{purity}_cleaned", hparams.batch_size, mode=hparams.mode)
         else:
             data_module = prepare_it_all(
                 events       = hparams.num_events,
